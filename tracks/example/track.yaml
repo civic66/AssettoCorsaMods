@@ -1,0 +1,49 @@
+# Example track: a loop around Twin Peaks, San Francisco.
+# (The summit road is pedestrian-only in OSM, so the loop goes around it.)
+# Copy this folder, change the waypoints, run:
+#   python -m trackgen tracks/<your_track>/track.yaml
+
+name: twin_peaks_loop            # AC folder name: lowercase, digits, underscores
+display_name: Twin Peaks Loop
+description: Street loop around Twin Peaks. Generated from OpenStreetMap + AWS Terrain Tiles.
+country: USA
+city: San Francisco
+author: ""
+
+# [lat, lon] points in driving order. The router follows OSM roads between
+# them and closes the loop back to the first one. Put one on each road you
+# want to use; add more if it takes a shortcut you don't want.
+# Tip: right-click in Google Maps or openstreetmap.org to copy coordinates.
+waypoints:
+  - [37.74691, -122.45072]   # Panorama Dr, leaving Portola Dr
+  - [37.75125, -122.45213]   # Panorama Dr
+  - [37.75395, -122.45124]   # Panorama Dr hairpins
+  - [37.75777, -122.45333]   # Clarendon Ave
+  - [37.75837, -122.44842]   # Twin Peaks Blvd (north end)
+  - [37.75338, -122.44437]   # Burnett Ave
+  - [37.74801, -122.44502]   # Burnett Ave
+  - [37.74654, -122.44719]   # Portola Dr, back to the start
+
+# Everything below is optional (defaults shown)
+reverse: false                # drive the loop the other way
+start_offset_m: auto          # metres along the lap, or auto = end of the straightest stretch
+grid_slots: 12
+pit_boxes: 12
+
+road:
+  width: 8.0                  # metres
+  shoulder: 3.0               # flat grass strip each side
+  wall_offset: 6.0            # barrier distance from road edge (null = none)
+  wall_height: 1.2
+
+smoothing:
+  xy_m: 4.0                   # bigger = rounder corners
+  z_m: 25.0                   # bigger = smoother elevation (DEM is noisy)
+  step_m: 2.0                 # centreline sample spacing
+
+terrain:
+  margin_m: 200.0             # terrain extends this far beyond the road
+  grid_m: 3.0
+  blend_m: 30.0               # distance over which terrain blends from road level to real ground
+
+elevation_zoom: 14            # 14 ~ 7-10 m/pixel; 15 for higher detail where available
