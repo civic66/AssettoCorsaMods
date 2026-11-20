@@ -1,0 +1,24 @@
+{
+  "name": "AR-12 Bentonville to Gentry",
+  "description": "Point-to-point run along Arkansas Highway 12, from SW Regional Airport Blvd in Bentonville west to 19353-19417 W Highway 12 near Gentry. Generated from OpenStreetMap road data and USGS elevation (AWS Terrain Tiles).",
+  "tags": [
+    "point to point",
+    "a to b",
+    "street",
+    "original"
+  ],
+  "geotags": [
+    "36.33612",
+    "-94.24635"
+  ],
+  "country": "USA",
+  "city": "Gentry, Arkansas",
+  "length": "27884",
+  "width": "8",
+  "pitboxes": "6",
+  "run": "A to B",
+  "author": "",
+  "version": "0.1",
+  "url": "",
+  "year": null
+}

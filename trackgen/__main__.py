@@ -1,7 +1,8 @@
-"""python -m trackgen tracks/<name>/track.yaml [-o output]"""
+"""python -m trackgen tracks/<name>/track.yaml [-o output] [--install DIR]"""
 import argparse
 import copy
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -11,21 +12,33 @@ from . import centerline as cl
 from .build import TrackGeometry
 from .elevation import ElevationSampler
 from .geo import LocalProjection
+from .kn5 import write_kn5
 from .mesh import write_mtl, write_obj
-from .osm import RoadGraph, fetch_roads, route_loop
-from .package import SURFACES_INI, write_map, write_route_debug, write_outline, write_preview, write_textures, write_ui
+from .osm import RoadGraph, fetch_roads, route_loop, route_open
+from .package import (SURFACES_INI, write_map, write_outline, write_preview, write_route_debug,
+                      write_textures, write_ui)
 
 DEFAULTS = {
     "display_name": None,
+    "type": "loop",               # loop | point_to_point
     "reverse": False,
     "road": {"width": 8.0, "shoulder": 3.0, "wall_offset": 6.0, "wall_height": 1.2},
     "smoothing": {"xy_m": 4.0, "z_m": 25.0, "step_m": 2.0},
     "terrain": {"margin_m": 200.0, "grid_m": 3.0, "blend_m": 30.0},
     "elevation_zoom": 14,
-    "start_offset_m": "auto",
+    "start_offset_m": "auto",     # loops only
+    "runoff_m": 80.0,             # point-to-point: road after the finish gate
     "grid_slots": 12,
     "pit_boxes": 12,
-    "osm": {"margin_m": 400.0, "highways": None, "reuse_penalty": 4.0},
+    "osm": {"margin_m": 400.0, "highways": None, "reuse_penalty": 4.0,
+            "corridor_m": 2500.0, "prefer_refs": None, "other_road_cost": 3.0},
+}
+
+MATERIALS = {
+    "asphalt": {"texture": "asphalt.png", "props": {"ksSpecular": 0.08, "ksSpecularEXP": 25.0}},
+    "grass": {"texture": "grass.png", "props": {}},
+    "barrier": {"texture": "barrier.png", "props": {"ksSpecular": 0.1, "ksSpecularEXP": 15.0}},
+    "line": {"texture": "line.png", "props": {"ksAmbient": 0.55, "ksDiffuse": 0.5}},
 }
 
 
@@ -43,12 +56,15 @@ def main():
     ap = argparse.ArgumentParser(description="Generate an Assetto Corsa track from OSM + elevation data")
     ap.add_argument("config", type=Path)
     ap.add_argument("-o", "--output", type=Path, default=Path("output"))
+    ap.add_argument("--install", type=Path, default=None,
+                    help="also copy the finished track folder here (e.g. .../assettocorsa/content/tracks)")
     args = ap.parse_args()
 
     cfg = merge(DEFAULTS, yaml.safe_load(args.config.read_text()))
     name = cfg["name"]
     if not name.replace("_", "").isalnum() or name.lower() != name:
         raise SystemExit("'name' must be lowercase letters/digits/underscores (it becomes the AC folder name)")
+    closed = cfg["type"] != "point_to_point"
 
     out = args.output / name
     src_dir = out / "source"
@@ -57,23 +73,28 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------ route
-    if "waypoints" in cfg:
-        wps = np.array(cfg["waypoints"], dtype=float)
-    else:
+    if "waypoints" not in cfg:
         raise SystemExit("config needs 'waypoints': a list of [lat, lon] in driving order")
+    wps = np.array(cfg["waypoints"], dtype=float)
     proj = LocalProjection(wps[:, 0].mean(), wps[:, 1].mean())
     wxy = np.column_stack(proj.to_xy(wps[:, 0], wps[:, 1]))
 
     if cfg.get("follow_roads", True):
-        m = cfg["osm"]["margin_m"]
+        oc = cfg["osm"]
+        m = oc["margin_m"] if closed else max(oc["margin_m"], oc["corridor_m"])
         lat_lo, lon_lo = proj.to_latlon(wxy[:, 0].min() - m, wxy[:, 1].min() - m)
         lat_hi, lon_hi = proj.to_latlon(wxy[:, 0].max() + m, wxy[:, 1].max() + m)
+        corridor = [tuple(p) for p in wps.tolist()] + ([tuple(wps[0])] if closed else [])
         print("Fetching OpenStreetMap roads...")
-        osm = fetch_roads(float(lat_lo), float(lon_lo), float(lat_hi), float(lon_hi), cfg["osm"]["highways"])
-        graph = RoadGraph(osm, proj)
-        print("Routing loop through waypoints...")
-        route_xy, _ = route_loop(graph, wxy, closed=True, reuse_penalty=cfg["osm"]["reuse_penalty"])
-        write_route_debug(src_dir / "route_check.png", graph, route_xy, wxy)
+        osm = fetch_roads(float(lat_lo), float(lon_lo), float(lat_hi), float(lon_hi), oc["highways"],
+                          corridor=corridor, buffer_deg=oc["corridor_m"] / 111000.0)
+        graph = RoadGraph(osm, proj, oc["prefer_refs"], oc["other_road_cost"])
+        print("Routing through waypoints...")
+        if closed:
+            route_xy, _ = route_loop(graph, wxy, closed=True, reuse_penalty=oc["reuse_penalty"])
+        else:
+            route_xy, _ = route_open(graph, wxy)
+        write_route_debug(src_dir / "route_check.png", graph, route_xy, wxy, closed=closed)
         print(f"  route preview: {src_dir / 'route_check.png'}")
     else:
         route_xy = wxy  # waypoints are the centreline itself (e.g. traced from a GPX)
@@ -81,12 +102,12 @@ def main():
         route_xy = route_xy[::-1]
 
     sm = cfg["smoothing"]
-    xy = cl.build_centerline(route_xy, sm["step_m"], sm["xy_m"])
+    xy = cl.build_centerline(route_xy, sm["step_m"], sm["xy_m"], closed=closed)
     clockwise = float(np.sum(xy[:, 0] * np.roll(xy[:, 1], -1) - np.roll(xy[:, 0], -1) * xy[:, 1])) < 0
     cfg["_clockwise"] = clockwise
 
     # ------------------------------------------------ elevation
-    tm = cfg["terrain"]["margin_m"] + 50
+    tm = max(cfg["terrain"]["margin_m"], 150.0) + 50
     lat_lo, lon_lo = proj.to_latlon(xy[:, 0].min() - tm, xy[:, 1].min() - tm)
     lat_hi, lon_hi = proj.to_latlon(xy[:, 0].max() + tm, xy[:, 1].max() + tm)
     print("Fetching elevation tiles...")
@@ -97,7 +118,7 @@ def main():
         return elev.sample(la, lo)
 
     raw_z = dem_fn(xy[:, 0], xy[:, 1])
-    z = cl.fit_heights(raw_z, sm["step_m"], sm["z_m"])
+    z = cl.fit_heights(raw_z, sm["step_m"], sm["z_m"], closed=closed)
     zero = float(z.min())  # put the lowest point of the road near y = 0
     z -= zero
 
@@ -106,42 +127,59 @@ def main():
 
     # ------------------------------------------------ geometry
     print("Building geometry...")
-    geo = TrackGeometry(xy, z, cfg)
+    geo = TrackGeometry(xy, z, cfg, closed=closed)
     geo.report()
     meshes = geo.road_meshes()
-    meshes += geo.shoulder_meshes(dem_rel, start_num=1)
-    n_sh = len(meshes) - len(geo.road_meshes())
-    meshes += geo.terrain_meshes(dem_rel, start_num=1 + n_sh)
+    shoulders = geo.shoulder_meshes(start_num=1)
+    meshes += shoulders
+    meshes += geo.terrain_meshes(dem_rel, start_num=1 + len(shoulders))
     meshes += geo.barrier_meshes(dem_rel, start_num=1)
-    start = cfg["start_offset_m"]
-    if start == "auto":
-        start = geo.auto_start(cfg["grid_slots"], cfg["pit_boxes"])
-        print(f"  start/finish placed {start:.0f} m into the lap (straightest run-up)")
-    markers, start_i = geo.markers(float(start), cfg["grid_slots"], cfg["pit_boxes"])
-    meshes.append(geo.start_line_mesh(start_i))
+    if closed:
+        start = cfg["start_offset_m"]
+        if start == "auto":
+            start = geo.auto_start(cfg["grid_slots"], cfg["pit_boxes"])
+            print(f"  start/finish placed {start:.0f} m into the lap (straightest run-up)")
+        markers, gates = geo.markers(float(start), cfg["grid_slots"], cfg["pit_boxes"])
+        meshes.append(geo.line_mesh("start_line", gates[0]))
+    else:
+        markers, gates = geo.markers_ab(cfg["grid_slots"], cfg["pit_boxes"], cfg["runoff_m"])
+        meshes.append(geo.line_mesh("start_line", gates[0]))
+        meshes.append(geo.line_mesh("finish_line", gates[1]))
+        print(f"  start gate at {gates[0]:.0f} m, finish gate at {gates[1]:.0f} m "
+              f"(timed distance {gates[1] - gates[0]:.0f} m)")
+    gate_idx = [geo.index_at(g) for g in gates]
 
+    # ------------------------------------------------ source files (Blender route)
     write_textures(src_dir / "textures")
-    write_mtl(src_dir / "track.mtl", {"asphalt": "textures/asphalt.png", "grass": "textures/grass.png",
-                                      "barrier": "textures/barrier.png", "line": "textures/line.png"})
+    write_mtl(src_dir / "track.mtl", {k: f"textures/{v['texture']}" for k, v in MATERIALS.items()})
     write_obj(meshes, src_dir / "track.obj", "track.mtl")
     (src_dir / "markers.json").write_text(json.dumps({
         "frame": "blender (x=east, y=north, z=up, metres)",
         "markers": markers}, indent=2))
-    lat0, lon0 = proj.to_latlon(*xy[start_i])
     (src_dir / "centerline.csv").write_text(
         "x_east,y_north,z_up\n" + "\n".join(f"{a:.3f},{b:.3f},{c:.3f}" for (a, b), c in zip(xy, z)))
 
-    # ------------------------------------------------ AC folder
+    # ------------------------------------------------ AC folder (ready to play)
+    textures = {v["texture"]: (src_dir / "textures" / v["texture"]).read_bytes() for v in MATERIALS.values()}
+    write_kn5(track_dir / f"{name}.kn5", name, meshes, markers, MATERIALS, textures)
     (track_dir / "data" / "surfaces.ini").write_text(SURFACES_INI)
-    write_map(track_dir, xy)
-    write_outline(track_dir / "ui" / "outline.png", xy, start_i)
-    write_preview(track_dir / "ui" / "preview.png", geo.terrain, xy)
-    write_ui(track_dir, cfg, geo.length, cfg["pit_boxes"], (float(lat0), float(lon0)))
+    write_map(track_dir, xy, closed=closed)
+    write_outline(track_dir / "ui" / "outline.png", xy, gate_idx, closed=closed)
+    write_preview(track_dir / "ui" / "preview.png", dem_rel, xy, closed=closed)
+    lat0, lon0 = proj.to_latlon(*xy[gate_idx[0]])
+    write_ui(track_dir, cfg, geo.length if closed else gates[1] - gates[0], cfg["pit_boxes"],
+             (float(lat0), float(lon0)), closed=closed)
 
     nverts = sum(len(m.vertices) for m in meshes)
-    print(f"Done: {len(meshes)} objects, {nverts:,} vertices")
-    print(f"  Blender source : {src_dir}")
+    size_mb = (track_dir / f"{name}.kn5").stat().st_size / 1e6
+    print(f"Done: {len(meshes)} meshes, {nverts:,} vertices, {name}.kn5 = {size_mb:.1f} MB")
     print(f"  AC track folder: {track_dir}")
+    if args.install:
+        dest = args.install / name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(track_dir, dest)
+        print(f"  installed to   : {dest}")
 
 
 if __name__ == "__main__":

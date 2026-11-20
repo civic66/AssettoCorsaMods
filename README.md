@@ -2,16 +2,21 @@
 
 ## trackgen: real-world road loops for Assetto Corsa
 
-`trackgen` turns a loop of real roads into an Assetto Corsa track. You give it
-a list of lat/lon waypoints; it
+`trackgen` turns real roads into an Assetto Corsa track: either a **loop** (circuit)
+or a **point-to-point** road (A to B). You give it a list of lat/lon waypoints; it
 
-1. downloads the road network from **OpenStreetMap** and routes a loop along real roads through your waypoints,
+1. downloads the road network from **OpenStreetMap** and routes along real roads through your waypoints,
 2. downloads real **terrain elevation** (AWS Terrain Tiles: SRTM / USGS 3DEP / EU-DEM…),
 3. smooths the centreline and builds a road ribbon, grass shoulders, terrain that blends into the road, and barriers,
-4. places the AC spawn/timing objects (grid, pits, hotlap start, start/finish line),
-5. writes the AC track folder (`ui_track.json`, preview, outline, minimap + `map.ini`, `surfaces.ini`).
+4. places the AC spawn/timing objects (grid, pits, hotlap start, start/finish line or A/B gates),
+5. writes a **complete, ready-to-play AC track folder**, including the `.kn5` model, `ui_track.json`,
+   preview, outline, minimap + `map.ini` and `surfaces.ini`.
 
-Then a Blender script turns it into an FBX, and Kunos' **ksEditor** turns that into the `.kn5` the game loads.
+Copy that folder into `assettocorsa/content/tracks/` and drive. The Blender/ksEditor route
+(below) is optional, for when you want to add scenery or nicer shaders.
+
+**Ready-made tracks** are in [`ready_tracks/`](ready_tracks/README.md). Currently:
+`ar12_gentry`, 28 km of Arkansas Highway 12 from Bentonville to Gentry.
 
 > **Why not Google Maps data?** Google's terms forbid extracting its map, satellite
 > and 3D data for use in other products, so a mod built from it can't be shared.
@@ -22,8 +27,8 @@ Then a Blender script turns it into an FBX, and Kunos' **ksEditor** turns that i
 ### Requirements
 
 * Python 3.9+ and `pip install -r requirements.txt`
-* [Blender](https://www.blender.org/) 3.6 or newer (tested with 4.2 LTS)
-* Assetto Corsa with the **AC SDK** (Steam → Library → Tools → *Assetto Corsa SDK*), which contains ksEditor
+* Optional, only for editing the scenery: [Blender](https://www.blender.org/) 3.6 or newer (tested with 4.2 LTS)
+  and the **AC SDK** (Steam → Library → Tools → *Assetto Corsa SDK*), which contains ksEditor
 
 ### 1. Describe the track
 
@@ -43,12 +48,27 @@ the lat/lon. Put a waypoint on every road you want to use. If the route takes a
 shortcut you don't want, add another waypoint on the road you meant.
 
 All other settings are optional: road width, shoulders, barrier distance, smoothing,
-terrain size and `reverse: true` to drive the loop the other way. The example file lists them all.
+terrain size and `reverse: true` to drive the other way. The example file lists them all.
+
+**Point-to-point roads:** add `type: point_to_point` and give the start and end as the first and
+last waypoints. To keep the router on one highway rather than shortcuts, list its OSM `ref`
+(see `tracks/ar12_gentry/track.yaml`):
+
+```yaml
+type: point_to_point
+osm:
+  prefer_refs: ["AR 12"]   # other roads cost 4x as much, so the route sticks to AR 12
+```
+
+On a point-to-point track the pit boxes and grid come first, then the `AC_AB_START` gate, and the
+`AC_AB_FINISH` gate sits `runoff_m` before the end of the road. Barrier walls close off both ends.
 
 ### 2. Generate
 
 ```bash
 python -m trackgen tracks/<your_track>/track.yaml
+# or build and copy it straight into the game:
+python -m trackgen tracks/<your_track>/track.yaml --install "C:/Program Files (x86)/Steam/steamapps/common/assettocorsa/content/tracks"
 ```
 
 Output goes to `output/<name>/`:
@@ -61,7 +81,8 @@ output/<name>/
     textures/            placeholder asphalt/grass/barrier textures
     markers.json         AC_START_n, AC_PIT_n, AC_HOTLAP_START_0, AC_TIME_0_L/R
     centerline.csv
-  content/tracks/<name>/ the folder that goes into Assetto Corsa
+  content/tracks/<name>/ the folder that goes into Assetto Corsa (ready to play)
+    <name>.kn5           road, terrain, barriers, spawn points
     ui/ui_track.json, preview.png, outline.png
     data/surfaces.ini, map.ini
     map.png
@@ -75,7 +96,7 @@ Downloads are cached in `~/.cache/trackgen`, so later runs are fast. If the Over
 are busy, the tool falls back to the main OSM API automatically
 (`TRACKGEN_OSM_SOURCE=api` skips Overpass entirely).
 
-### 3. Blender → FBX
+### 3. (Optional) Blender → FBX, to add scenery
 
 ```bash
 blender --background --python blender/import_track.py -- output/<name>/source
@@ -86,7 +107,9 @@ and exports `source/fbx/track.fbx` with AC-friendly settings (forward −Z, up Y
 copied next to it). You can also open `track.blend` and add buildings, trees, kerbs and so on
 before exporting.
 
-### 4. ksEditor → KN5
+### 4. (Optional) ksEditor → KN5
+
+This replaces the `.kn5` that trackgen writes, so you only need it after editing in Blender.
 
 1. Open ksEditor, then *File → Import FBX* → `source/fbx/track.fbx`.
 2. In the *Materials* panel, give each material a shader. `ksPerPixel` is fine to start with
@@ -117,6 +140,9 @@ Coordinates are metres, with X = east, Z = −north and Y = up in game. The lowe
 
 * Textures are procedural placeholders, and there are no buildings, trees or road markings beyond the edge lines.
 * Pit boxes are on the track behind the grid; there's no separate pit lane.
+* No AI line is generated. Record one in-game (see step 4).
+* Side roads and junctions aren't modelled; only the chosen route is.
+* The `.kn5` uses the simple `ksPerPixel` shader with PNG textures.
 * One-way tags are ignored when routing. If a road is split into two carriageways in OSM, the loop uses one of them.
 * If the loop crosses itself (a bridge or junction), the geometry there needs fixing by hand in Blender.
 * Elevation comes from ~5–30 m terrain models: good for the shape of hills, not for road crowns or kerbs.

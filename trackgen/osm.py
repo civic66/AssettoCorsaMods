@@ -41,52 +41,90 @@ def _fetch_overpass(query):
     return None
 
 
-def _fetch_osm_api(south, west, north, east, highways, tile_deg=0.015):
+def _seg_dist(px, py, ax, ay, bx, by):
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+    return math.hypot(px - ax - t * dx, py - ay - t * dy)
+
+
+def _api_tiles(south, west, north, east, tile_deg, corridor=None, buffer_deg=0.0):
+    """Tiles on a fixed global grid; optionally only those near a lat/lon polyline."""
+    tiles = []
+    la = math.floor(south / tile_deg) * tile_deg
+    while la < north:
+        lo = math.floor(west / tile_deg) * tile_deg
+        while lo < east:
+            keep = True
+            if corridor is not None and len(corridor) > 1:
+                k = math.cos(math.radians(la))
+                cy, cx = la + tile_deg / 2, (lo + tile_deg / 2) * k
+                d = min(_seg_dist(cx, cy, a[1] * k, a[0], b[1] * k, b[0])
+                        for a, b in zip(corridor, corridor[1:]))
+                keep = d < buffer_deg + tile_deg * 0.75
+            if keep:
+                tiles.append((round(la, 6), round(lo, 6)))
+            lo += tile_deg
+        la += tile_deg
+    return tiles
+
+
+def _fetch_osm_api(south, west, north, east, highways, tile_deg=0.015, corridor=None, buffer_deg=0.0):
     """Fallback: the main OSM API /map call, tiled (it caps bbox size and node count)."""
     import xml.etree.ElementTree as ET
 
     nodes, ways = {}, {}
-    lats = np.arange(south, north, tile_deg)
-    lons = np.arange(west, east, tile_deg)
-    total = len(lats) * len(lons)
-    k = 0
-    for la in lats:
-        for lo in lons:
-            k += 1
-            bbox = f"{lo:.6f},{la:.6f},{min(lo + tile_deg, east):.6f},{min(la + tile_deg, north):.6f}"
-            path = cache_path("osmapi", bbox, ".osm")
-            if not path.exists():
-                print(f"  OSM API tile {k}/{total}")
-                for attempt in range(4):
-                    try:
-                        r = requests.get("https://api.openstreetmap.org/api/0.6/map",
-                                         params={"bbox": bbox}, timeout=(10, 120),
-                                         headers={"User-Agent": USER_AGENT})
-                        if r.status_code == 200:
-                            path.write_bytes(r.content)
-                            break
-                        if r.status_code == 400:
-                            raise RuntimeError("OSM API refused the tile (too many nodes); "
-                                               "lower tile_deg in osm.py")
-                    except requests.RequestException:
-                        pass
-                    time.sleep(3 * (attempt + 1))
-                else:
-                    raise RuntimeError("OSM API download failed")
-            root = ET.parse(path).getroot()
-            for n in root.iter("node"):
-                nodes[int(n.get("id"))] = (float(n.get("lat")), float(n.get("lon")))
-            for w in root.iter("way"):
-                tags = {t.get("k"): t.get("v") for t in w.iter("tag")}
-                if tags.get("highway") in highways:
-                    ways[int(w.get("id"))] = [int(nd.get("ref")) for nd in w.iter("nd")]
+    tiles = _api_tiles(south, west, north, east, tile_deg, corridor, buffer_deg)
+
+    def download(la, lo, size):
+        """Cached tile download; splits into quarters if the API says it is too dense."""
+        bbox = f"{lo:.6f},{la:.6f},{lo + size:.6f},{la + size:.6f}"
+        path = cache_path("osmapi", bbox, ".osm")
+        if path.exists():
+            return [path]
+        for attempt in range(5):
+            try:
+                r = requests.get("https://api.openstreetmap.org/api/0.6/map",
+                                 params={"bbox": bbox}, timeout=(10, 120),
+                                 headers={"User-Agent": USER_AGENT})
+                if r.status_code == 200:
+                    path.write_bytes(r.content)
+                    return [path]
+                if r.status_code == 400 and size > 0.002:
+                    h = size / 2
+                    return [q for dla in (0, h) for dlo in (0, h) for q in download(la + dla, lo + dlo, h)]
+                if r.status_code == 400:
+                    raise RuntimeError(f"OSM API refused tile {bbox} even after splitting")
+            except requests.RequestException:
+                pass
+            time.sleep(3 * (attempt + 1))
+        raise RuntimeError("OSM API download failed")
+
+    paths = []
+    for k, (la, lo) in enumerate(tiles, 1):
+        print(f"  OSM API tile {k}/{len(tiles)}", flush=True)
+        paths += download(la, lo, tile_deg)
+    for path in paths:
+        root = ET.parse(path).getroot()
+        for n in root.iter("node"):
+            nodes[int(n.get("id"))] = (float(n.get("lat")), float(n.get("lon")))
+        for w in root.iter("way"):
+            tags = {t.get("k"): t.get("v") for t in w.iter("tag")}
+            if tags.get("highway") in highways:
+                ways[int(w.get("id"))] = {
+                    "nodes": [int(nd.get("ref")) for nd in w.iter("nd")],
+                    "tags": {k: tags[k] for k in ("highway", "ref", "name", "bridge", "oneway") if k in tags}}
     elements = [{"type": "node", "id": i, "lat": a, "lon": b} for i, (a, b) in nodes.items()]
-    elements += [{"type": "way", "id": i, "nodes": nds} for i, nds in ways.items()]
+    elements += [{"type": "way", "id": i, **w} for i, w in ways.items()]
     return {"elements": elements}
 
 
-def fetch_roads(south, west, north, east, highways=None):
-    """Drivable OSM ways in a bounding box, as Overpass-style JSON."""
+def fetch_roads(south, west, north, east, highways=None, corridor=None, buffer_deg=0.03):
+    """Drivable OSM ways in a bounding box, as Overpass-style JSON.
+
+    corridor: optional list of (lat, lon); with the OSM API fallback only tiles
+    within buffer_deg of it are downloaded (useful for long point-to-point roads).
+    """
     highways = highways or DEFAULT_HIGHWAYS
     hw = "|".join(highways)
     query = (
@@ -94,7 +132,8 @@ def fetch_roads(south, west, north, east, highways=None):
         f'way["highway"~"^({hw})$"]({south:.6f},{west:.6f},{north:.6f},{east:.6f});'
         f"(._;>;);out body;"
     )
-    path = cache_path("osm", query, ".json")
+    key = query + (json.dumps(corridor) + str(buffer_deg) if corridor is not None else "")
+    path = cache_path("osm", key, ".json")
     if path.exists():
         return json.loads(path.read_text())
     data = None
@@ -102,13 +141,17 @@ def fetch_roads(south, west, north, east, highways=None):
         data = _fetch_overpass(query)
     if data is None:
         print("  using the main OpenStreetMap API instead")
-        data = _fetch_osm_api(south, west, north, east, set(highways))
+        data = _fetch_osm_api(south, west, north, east, set(highways),
+                              corridor=corridor, buffer_deg=buffer_deg)
     path.write_text(json.dumps(data))
     return data
 
 
 class RoadGraph:
-    def __init__(self, osm_json, proj):
+    def __init__(self, osm_json, proj, prefer_refs=None, other_road_cost=3.0):
+        """prefer_refs: e.g. ["AR 12"]; roads without one of these refs cost
+        other_road_cost times their length, so the router sticks to them."""
+        prefer = set(prefer_refs or [])
         self.coords = {}  # node id -> (x, y)
         self.latlon = {}
         self.adj = {}  # node id -> list of (neighbour, length)
@@ -121,10 +164,14 @@ class RoadGraph:
             if el["type"] != "way":
                 continue
             nodes = [n for n in el["nodes"] if n in self.coords]
+            mult = 1.0
+            if prefer:
+                refs = {r.strip() for r in el.get("tags", {}).get("ref", "").split(";")}
+                mult = 1.0 if refs & prefer else other_road_cost
             for a, b in zip(nodes, nodes[1:]):
                 ax, ay = self.coords[a]
                 bx, by = self.coords[b]
-                d = math.hypot(bx - ax, by - ay)
+                d = math.hypot(bx - ax, by - ay) * mult
                 self.adj.setdefault(a, []).append((b, d))
                 self.adj.setdefault(b, []).append((a, d))
         if not self.adj:
@@ -204,3 +251,8 @@ def route_loop(graph, waypoints_xy, closed=True, reuse_penalty=4.0):
               "(crossing or shared road section); check the map preview.")
     xy = np.array([graph.coords[n] for n in nodes])
     return xy, nodes
+
+
+def route_open(graph, waypoints_xy):
+    """Point-to-point route through the waypoints, first to last."""
+    return route_loop(graph, waypoints_xy, closed=False, reuse_penalty=1.0)

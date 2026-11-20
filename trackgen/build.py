@@ -1,12 +1,15 @@
-"""Geometry generation: road ribbon, shoulders, terrain, barriers, AC markers."""
+"""Geometry generation: road ribbon, shoulders, terrain, barriers, AC markers.
+
+Works for closed loops (circuits) and open roads (point-to-point / A-to-B).
+"""
 import numpy as np
 
 from .centerline import curvature_radius, tangents
 from .mesh import Mesh, strip_chunks
 
-ROAD_SINK = 0.0      # road surface sits exactly on the centreline height
 SHOULDER_DROP = 0.03  # shoulder sits slightly below the road edge
 TERRAIN_DROP = 0.15   # terrain under road/shoulder hidden just below them
+TERRAIN_TILE = 180    # cells per terrain tile side (keeps meshes < 65k vertices)
 
 
 def _smoothstep(t):
@@ -22,23 +25,35 @@ def conform_height(d, zc, dem, inner, blend):
 
 
 class TrackGeometry:
-    def __init__(self, xy, z, cfg):
+    def __init__(self, xy, z, cfg, closed=True):
         self.xy = xy
         self.z = z
         self.cfg = cfg
+        self.closed = closed
         self.n = len(xy)
-        self.t = tangents(xy, closed=True)
+        self.t = tangents(xy, closed=closed)
         self.nrm = np.column_stack([-self.t[:, 1], self.t[:, 0]])  # left normal
-        seg = np.hypot(*np.diff(np.vstack([xy, xy[:1]]), axis=0).T)
-        self.s = np.concatenate([[0.0], np.cumsum(seg)])  # n+1 entries, s[-1] = length
+        pts = np.vstack([xy, xy[:1]]) if closed else xy
+        seg = np.hypot(*np.diff(pts, axis=0).T)
+        # closed: n+1 entries (last = lap length); open: n entries
+        self.s = np.concatenate([[0.0], np.cumsum(seg)])
         self.length = float(self.s[-1])
+        # rows used for strips (closed loops repeat the first row at the end)
+        self.rows = np.concatenate([np.arange(self.n), [0]]) if closed else np.arange(self.n)
+        # segments (i, j)
+        i = np.arange(self.n if closed else self.n - 1)
+        self.seg_i, self.seg_j = i, (i + 1) % self.n
 
     # ------------------------------------------------------------------ checks
     def report(self):
         hw = self.cfg["road"]["width"] / 2
-        r = np.abs(curvature_radius(self.xy))
+        r = np.abs(curvature_radius(self.xy, self.closed))
+        if not self.closed:
+            r = r[2:-2]
         tight = np.sum(r < hw * 1.5)
-        grade = np.diff(np.concatenate([self.z, self.z[:1]])) / np.diff(self.s)
+        dz = self.z[self.seg_j] - self.z[self.seg_i]
+        ds = np.maximum(np.diff(self.s), 1e-6)
+        grade = dz / ds
         print(f"  length {self.length:.0f} m, elevation range {self.z.min():.1f}..{self.z.max():.1f} m, "
               f"max grade {np.abs(grade).max() * 100:.1f}%, tightest radius {r.min():.1f} m")
         if tight:
@@ -46,22 +61,17 @@ class TrackGeometry:
                   "the road may fold there. Increase smoothing.xy_m or reduce road.width.")
 
     # ------------------------------------------------------------------ road
-    def _ring_rows(self):
-        """Close the loop by repeating the first row at the end."""
-        idx = np.concatenate([np.arange(self.n), [0]])
-        return idx
-
     def road_meshes(self):
         rc = self.cfg["road"]
         hw = rc["width"] / 2
         cols = 5
         lat = np.linspace(-hw, hw, cols)  # right ... left
-        idx = self._ring_rows()
+        idx = self.rows
         P = self.xy[idx][:, None, :] + self.nrm[idx][:, None, :] * lat[None, :, None]
-        Z = np.repeat(self.z[idx][:, None] - ROAD_SINK, cols, axis=1)
+        Z = np.repeat(self.z[idx][:, None], cols, axis=1)
         V = np.dstack([P, Z])
         u = (lat + hw) / (2 * hw)
-        v = self.s[:, None] / rc["width"]
+        v = self.s[:len(idx), None] / rc["width"]
         UV = np.dstack([np.broadcast_to(u, (len(idx), cols)), np.broadcast_to(v, (len(idx), cols))])
         meshes = []
         for k, (a, b) in enumerate(strip_chunks(len(idx), cols)):
@@ -70,13 +80,13 @@ class TrackGeometry:
             meshes.append(m)
         return meshes
 
-    def shoulder_meshes(self, dem_fn, start_num):
+    def shoulder_meshes(self, start_num):
         rc = self.cfg["road"]
         hw = rc["width"] / 2
         sw = rc["shoulder"]
         if sw <= 0:
             return []
-        idx = self._ring_rows()
+        idx = self.rows
         meshes = []
         num = start_num
         for side in (1, -1):
@@ -87,7 +97,7 @@ class TrackGeometry:
             Z = np.repeat(self.z[idx][:, None] - SHOULDER_DROP, 2, axis=1)
             V = np.dstack([P, Z])
             UV = np.dstack([np.broadcast_to(off / 4.0, (len(idx), 2)),
-                            np.broadcast_to(self.s[:, None] / 4.0, (len(idx), 2))])
+                            np.broadcast_to(self.s[:len(idx), None] / 4.0, (len(idx), 2))])
             for a, b in strip_chunks(len(idx), 2):
                 m = Mesh(f"{num}GRASS", "grass")
                 m.add_grid(V[a:b + 1], UV[a:b + 1])
@@ -95,46 +105,43 @@ class TrackGeometry:
                 num += 1
         return meshes
 
-    def start_line_mesh(self, start_idx):
+    def line_mesh(self, name, s_at):
+        """Thin white line across the road (visual only)."""
         hw = self.cfg["road"]["width"] / 2
-        i = start_idx
+        i = self.index_at(s_at)
         c, t, nl = self.xy[i], self.t[i], self.nrm[i]
-        corners = []
-        for along in (-0.3, 0.3):
-            row = [c + t * along + nl * lat for lat in (-hw, hw)]
-            corners.append(row)
-        P = np.array(corners)
+        P = np.array([[c + t * along + nl * lat for lat in (-hw, hw)] for along in (-0.3, 0.3)])
         Z = np.full(P.shape[:2] + (1,), self.z[i] + 0.01)
         UV = np.array([[[0, 0], [1, 0]], [[0, 1], [1, 1]]], dtype=float)
-        m = Mesh("start_line", "line")  # visual only (no surface prefix)
+        m = Mesh(name, "line")
         m.add_grid(np.dstack([P, Z]), UV)
         return m
 
     # ------------------------------------------------------------------ distance field
-    def distance_field(self, X, Y):
+    def distance_field(self, X, Y, reach):
         """Distance to the centreline and centreline height at the closest point."""
-        rc = self.cfg["road"]
-        tc = self.cfg["terrain"]
-        reach = rc["width"] / 2 + rc["shoulder"] + tc["blend_m"] + 5
         D = np.full(X.shape, np.inf)
         ZC = np.zeros(X.shape)
         x0, y0 = X[0, 0], Y[0, 0]
-        g = tc["grid_m"]
-        for i in range(self.n):
-            j = (i + 1) % self.n
-            a, b = self.xy[i], self.xy[j]
-            lo = np.minimum(a, b) - reach
-            hi = np.maximum(a, b) + reach
-            c0 = max(int((lo[0] - x0) / g), 0)
-            c1 = min(int((hi[0] - x0) / g) + 2, X.shape[1])
-            r0 = max(int((lo[1] - y0) / g), 0)
-            r1 = min(int((hi[1] - y0) / g) + 2, X.shape[0])
+        g = X[0, 1] - X[0, 0]
+        A = self.xy[self.seg_i]
+        B = self.xy[self.seg_j]
+        lo = np.minimum(A, B) - reach
+        hi = np.maximum(A, B) + reach
+        near = (hi[:, 0] >= X[0, 0]) & (lo[:, 0] <= X[0, -1]) & (hi[:, 1] >= Y[0, 0]) & (lo[:, 1] <= Y[-1, 0])
+        for k in np.nonzero(near)[0]:
+            i, j = self.seg_i[k], self.seg_j[k]
+            a, b = A[k], B[k]
+            c0 = max(int((lo[k, 0] - x0) / g), 0)
+            c1 = min(int((hi[k, 0] - x0) / g) + 2, X.shape[1])
+            r0 = max(int((lo[k, 1] - y0) / g), 0)
+            r1 = min(int((hi[k, 1] - y0) / g) + 2, X.shape[0])
             if c0 >= c1 or r0 >= r1:
                 continue
             px = X[r0:r1, c0:c1] - a[0]
             py = Y[r0:r1, c0:c1] - a[1]
             ab = b - a
-            L2 = ab @ ab
+            L2 = max(ab @ ab, 1e-9)
             t = np.clip((px * ab[0] + py * ab[1]) / L2, 0, 1)
             d = np.hypot(px - t * ab[0], py - t * ab[1])
             zc = self.z[i] * (1 - t) + self.z[j] * t
@@ -145,37 +152,57 @@ class TrackGeometry:
         return D, ZC
 
     def terrain_meshes(self, dem_fn, start_num):
+        """Terrain in tiles, only within terrain.margin_m of the road."""
         rc = self.cfg["road"]
         tc = self.cfg["terrain"]
         g = tc["grid_m"]
-        m = tc["margin_m"]
-        lo = self.xy.min(axis=0) - m
-        hi = self.xy.max(axis=0) + m
-        xs = np.arange(lo[0], hi[0] + g, g)
-        ys = np.arange(lo[1], hi[1] + g, g)
-        X, Y = np.meshgrid(xs, ys)
-        print(f"  terrain grid {X.shape[1]} x {X.shape[0]} ({X.size:,} vertices)")
-        dem = dem_fn(X, Y)
-        D, ZC = self.distance_field(X, Y)
+        margin = tc["margin_m"]
         inner = rc["width"] / 2 + rc["shoulder"]
-        H = np.where(np.isfinite(D), conform_height(D, ZC, dem, inner, tc["blend_m"]), dem)
-        V = np.dstack([X, Y, H])
-        UV = np.dstack([X / 8.0, Y / 8.0])
+        lo = np.floor((self.xy.min(axis=0) - margin) / g) * g
+        hi = self.xy.max(axis=0) + margin
+        nx = int(np.ceil((hi[0] - lo[0]) / g)) + 1
+        ny = int(np.ceil((hi[1] - lo[1]) / g)) + 1
+        T = TERRAIN_TILE
         meshes = []
         num = start_num
-        # chunk into tiles of <= MAX_VERTS
-        tile = 200
-        for r in range(0, X.shape[0] - 1, tile):
-            for c in range(0, X.shape[1] - 1, tile):
-                sl = (slice(r, min(r + tile + 1, X.shape[0])), slice(c, min(c + tile + 1, X.shape[1])))
+        total = 0
+        for r in range(0, ny - 1, T):
+            for c in range(0, nx - 1, T):
+                xs = lo[0] + g * np.arange(c, min(c + T + 1, nx))
+                ys = lo[1] + g * np.arange(r, min(r + T + 1, ny))
+                # cheap reject: any centreline point within margin of this tile?
+                inside = ((self.xy[:, 0] > xs[0] - margin) & (self.xy[:, 0] < xs[-1] + margin) &
+                          (self.xy[:, 1] > ys[0] - margin) & (self.xy[:, 1] < ys[-1] + margin))
+                if not inside.any():
+                    continue
+                X, Y = np.meshgrid(xs, ys)
+                D, ZC = self.distance_field(X, Y, margin + 2 * g)
+                quad_d = np.minimum(np.minimum(D[:-1, :-1], D[1:, :-1]), np.minimum(D[:-1, 1:], D[1:, 1:]))
+                mask = quad_d <= margin
+                if not mask.any():
+                    continue
+                dem = dem_fn(X, Y)
+                H = np.where(np.isfinite(D), conform_height(D, ZC, dem, inner, tc["blend_m"]), dem)
                 mm = Mesh(f"{num}GRASS", "grass")
-                mm.add_grid(V[sl], UV[sl], flip=True)
+                mm.add_grid(np.dstack([X, Y, H]), np.dstack([X / 8.0, Y / 8.0]), flip=True, mask=mask)
+                mm.compact()
                 meshes.append(mm)
+                total += len(mm.vertices)
                 num += 1
-        self.terrain = (X, Y, H)
+        print(f"  terrain: {len(meshes)} tiles, {total:,} vertices")
         return meshes
 
     # ------------------------------------------------------------------ barriers
+    def _wall(self, P, base, height, name, uv_s):
+        bot = np.column_stack([P, base - 0.5])
+        top = np.column_stack([P, base + height])
+        V = np.stack([bot, top], axis=1)
+        UV = np.dstack([np.stack([uv_s, uv_s], 1) / 4.0, np.broadcast_to([0.0, 1.0], (len(P), 2))])
+        mm = Mesh(name, "barrier")
+        mm.add_grid(V, UV, flip=False)  # double sided: both windings
+        mm.add_grid(V, UV, flip=True)
+        return mm
+
     def barrier_meshes(self, dem_fn, start_num):
         rc = self.cfg["road"]
         if rc.get("wall_offset") is None:
@@ -184,24 +211,25 @@ class TrackGeometry:
         dist = hw + rc["wall_offset"]
         height = rc["wall_height"]
         inner = hw + rc["shoulder"]
+        blend = self.cfg["terrain"]["blend_m"]
         meshes = []
         num = start_num
+        n = len(self.xy)
         for side in (1, -1):
             P = self.xy + self.nrm * dist * side
             # drop points that ended up close to another part of the road
             # (inside of tight corners, crossings, parallel sections)
-            keep = np.ones(len(P), dtype=bool)
-            for k in range(0, len(P), 500):
+            keep = np.ones(n, dtype=bool)
+            for k in range(0, n, 500):
                 blk = P[k:k + 500]
                 d = np.hypot(blk[:, None, 0] - self.xy[None, :, 0], blk[:, None, 1] - self.xy[None, :, 1])
                 keep[k:k + 500] = d.min(axis=1) > dist - 0.75
-            base = conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, self.cfg["terrain"]["blend_m"])
-            # split into continuous runs (wrapping around the loop)
+            base = conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, blend)
             if keep.all():
-                runs = [list(range(len(P))) + [0]]  # closed ring
+                runs = [list(range(n)) + ([0] if self.closed else [])]
             else:
-                first_gap = int(np.argmin(keep))
-                order = (np.arange(len(P)) + first_gap) % len(P)
+                first_gap = int(np.argmin(keep)) if self.closed else 0
+                order = (np.arange(n) + first_gap) % n
                 runs, cur = [], []
                 for i in order:
                     if keep[i]:
@@ -215,24 +243,28 @@ class TrackGeometry:
                 if len(run) < 3:
                     continue
                 run = np.array(run)
-                bot = np.column_stack([P[run], base[run] - 0.5])
-                top = np.column_stack([P[run], base[run] + height])
                 s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(P[run], axis=0).T))])
-                V = np.stack([bot, top], axis=1)
-                UV = np.dstack([np.stack([s, s], 1) / 4.0, np.broadcast_to([0.0, 1.0], (len(run), 2))])
                 for a, b in strip_chunks(len(run), 4):
-                    mm = Mesh(f"{num}BARRIER", "barrier")
-                    # double sided: both windings
-                    mm.add_grid(V[a:b + 1], UV[a:b + 1], flip=(side > 0))
-                    mm.add_grid(V[a:b + 1], UV[a:b + 1], flip=(side < 0))
-                    meshes.append(mm)
+                    sl = slice(a, b + 1)
+                    meshes.append(self._wall(P[run][sl], base[run][sl], height, f"{num}BARRIER", s[sl]))
                     num += 1
+        if not self.closed:
+            # end caps across the road at both ends
+            for i in (0, n - 1):
+                lat = np.linspace(-dist, dist, 12)
+                P = self.xy[i] + self.nrm[i] * lat[:, None]
+                base = np.full(len(lat), self.z[i] - TERRAIN_DROP)
+                meshes.append(self._wall(P, base, height, f"{num}BARRIER", lat - lat[0]))
+                num += 1
         return meshes
 
     # ------------------------------------------------------------------ markers
     def index_at(self, s):
-        s = s % self.length
-        return int(np.searchsorted(self.s, s, side="right") - 1) % self.n
+        if self.closed:
+            s = s % self.length
+        else:
+            s = min(max(s, 0.0), self.length)
+        return min(int(np.searchsorted(self.s, s, side="right") - 1), self.n - 1) % self.n
 
     def auto_start(self, n_grid, n_pits):
         """Distance along the lap whose preceding stretch (grid + pits) is straightest."""
@@ -242,32 +274,48 @@ class TrackGeometry:
         ang = np.unwrap(np.arctan2(self.t[:, 1], self.t[:, 0]))
         dang = np.abs(np.angle(np.exp(1j * np.diff(np.concatenate([ang, ang[:1]])))))
         csum = np.concatenate([[0], np.cumsum(np.concatenate([dang, dang]))])
-        # turning over the window ending at i (wrapping)
         idx = np.arange(self.n) + self.n
         turn = csum[idx] - csum[idx - w]
-        i = int(np.argmin(turn))
-        return float(self.s[i])
+        return float(self.s[int(np.argmin(turn))])
+
+    def _put(self, out, name, s, lateral=0.0, lift=0.2):
+        i = self.index_at(s)
+        p = self.xy[i] + self.nrm[i] * lateral
+        out.append({"name": name,
+                    "position": [float(p[0]), float(p[1]), float(self.z[i] + lift)],
+                    "forward": [float(self.t[i][0]), float(self.t[i][1]), 0.0]})
 
     def markers(self, start_offset, n_grid, n_pits):
-        """AC dummy objects. Position in local frame, forward = driving direction."""
+        """Circuit AC dummy objects. Returns (markers, start/finish distance)."""
         hw = self.cfg["road"]["width"] / 2
         out = []
-
-        def put(name, s, lateral=0.0, lift=0.2):
-            i = self.index_at(s)
-            p = self.xy[i] + self.nrm[i] * lateral
-            out.append({"name": name,
-                        "position": [float(p[0]), float(p[1]), float(self.z[i] + lift)],
-                        "forward": [float(self.t[i][0]), float(self.t[i][1]), 0.0]})
-
         s0 = start_offset
-        i0 = self.index_at(s0)
-        put("AC_TIME_0_L", s0, hw + 0.5, 0.0)
-        put("AC_TIME_0_R", s0, -(hw + 0.5), 0.0)
+        self._put(out, "AC_TIME_0_L", s0, hw + 0.5, 0.0)
+        self._put(out, "AC_TIME_0_R", s0, -(hw + 0.5), 0.0)
         for k in range(n_grid):
-            put(f"AC_START_{k}", s0 - 8 - k * 7, (hw / 3) * (1 if k % 2 == 0 else -1))
+            self._put(out, f"AC_START_{k}", s0 - 8 - k * 7, (hw / 3) * (1 if k % 2 == 0 else -1))
         pit_s = s0 - 8 - n_grid * 7 - 20
         for k in range(n_pits):
-            put(f"AC_PIT_{k}", pit_s - k * 7, (hw / 3) * (1 if k % 2 == 0 else -1))
-        put("AC_HOTLAP_START_0", s0 - min(200, self.length * 0.2))
-        return out, i0
+            self._put(out, f"AC_PIT_{k}", pit_s - k * 7, (hw / 3) * (1 if k % 2 == 0 else -1))
+        self._put(out, "AC_HOTLAP_START_0", s0 - min(200, self.length * 0.2))
+        return out, [s0]
+
+    def markers_ab(self, n_grid, n_pits, runoff):
+        """Point-to-point dummies: pits, then grid, then the A gate; B gate before the end."""
+        hw = self.cfg["road"]["width"] / 2
+        out = []
+        stagger = hw / 3
+        pit0 = 12.0
+        for k in range(n_pits):
+            self._put(out, f"AC_PIT_{k}", pit0 + k * 7, stagger * (1 if k % 2 == 0 else -1))
+        s_a = pit0 + n_pits * 7 + 15 + 8 + max(n_grid - 1, 0) * 7 + 8
+        for k in range(n_grid):
+            self._put(out, f"AC_START_{k}", s_a - 8 - k * 7, stagger * (1 if k % 2 == 0 else -1))
+        self._put(out, "AC_HOTLAP_START_0", 6.0)
+        s_b = self.length - runoff
+        if s_b <= s_a + 100:
+            raise SystemExit("Road too short for the grid/pits; lower grid_slots/pit_boxes or runoff_m")
+        for nm, s in (("AC_AB_START", s_a), ("AC_AB_FINISH", s_b)):
+            self._put(out, f"{nm}_L", s, hw + 0.5, 0.0)
+            self._put(out, f"{nm}_R", s, -(hw + 0.5), 0.0)
+        return out, [s_a, s_b]

@@ -22,8 +22,9 @@ class Mesh:
         self.uv = []
         self.f = []
 
-    def add_grid(self, verts, uvs, flip=False):
-        """verts, uvs: (rows, cols, 3) / (rows, cols, 2). Adds a quad grid."""
+    def add_grid(self, verts, uvs, flip=False, mask=None):
+        """verts, uvs: (rows, cols, 3) / (rows, cols, 2). Adds a quad grid.
+        mask: optional (rows-1, cols-1) bool array of quads to keep."""
         rows, cols = verts.shape[:2]
         base = sum(len(a) for a in self.v)
         self.v.append(verts.reshape(-1, 3))
@@ -37,7 +38,17 @@ class Mesh:
             tris = [np.stack([i00, i01, i10], -1), np.stack([i01, i11, i10], -1)]
         else:
             tris = [np.stack([i00, i10, i01], -1), np.stack([i01, i10, i11], -1)]
+        if mask is not None:
+            tris = [t[mask] for t in tris]
         self.f.append(np.concatenate([t.reshape(-1, 3) for t in tris]))
+
+    def compact(self):
+        """Drop vertices not referenced by any face."""
+        v, uv, f = self.vertices, self.uvs, self.faces
+        used = np.unique(f)
+        remap = np.full(len(v), -1)
+        remap[used] = np.arange(len(used))
+        self.v, self.uv, self.f = [v[used]], [uv[used]], [remap[f]]
 
     @property
     def vertices(self):

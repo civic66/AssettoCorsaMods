@@ -1,0 +1,43 @@
+# Point-to-point: Arkansas Highway 12 from west Bentonville to just east of Gentry, AR.
+#   python -m trackgen tracks/ar12_gentry/track.yaml
+
+name: ar12_gentry
+display_name: AR-12 Bentonville to Gentry
+description: >-
+  Point-to-point run along Arkansas Highway 12, from SW Regional Airport Blvd in
+  Bentonville west to 19353-19417 W Highway 12 near Gentry. Generated from
+  OpenStreetMap road data and USGS elevation (AWS Terrain Tiles).
+country: USA
+city: Gentry, Arkansas
+author: ""
+
+type: point_to_point
+
+waypoints:
+  - [36.3359695, -94.2453314]   # start (on AR-12 / SW Regional Airport Blvd)
+  - [36.2630000, -94.4620000]   # finish: 19353-19417 W Highway 12, Gentry
+
+osm:
+  prefer_refs: ["AR 12"]        # stay on Highway 12 between the waypoints
+  other_road_cost: 4.0
+  corridor_m: 3000              # only download map data this close to the route
+
+road:
+  width: 8.0
+  shoulder: 3.0
+  wall_offset: 8.0
+  wall_height: 1.2
+
+smoothing:
+  xy_m: 7.0                     # rounds the 90-degree junction turns enough for an 8 m road
+  z_m: 25.0
+  step_m: 2.0
+
+terrain:
+  margin_m: 150.0
+  grid_m: 4.0
+  blend_m: 30.0
+
+grid_slots: 6
+pit_boxes: 6
+runoff_m: 100

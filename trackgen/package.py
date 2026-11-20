@@ -2,7 +2,7 @@
 import json
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 SURFACES_INI = """\
 ; Track-specific surfaces. ROAD and GRASS come from AC's built-in surfaces.ini.
@@ -68,7 +68,7 @@ def _fit(xy, w, h, margin):
     return np.column_stack([px, py]), scale
 
 
-def write_map(track_dir, xy, max_size=1024, margin=20, line=10):
+def write_map(track_dir, xy, max_size=1024, margin=20, line=10, closed=True):
     """map.png + data/map.ini. AC world: X = east, Z = -north (we use x, -y)."""
     wx, wz = xy[:, 0], -xy[:, 1]
     ext = max(wx.max() - wx.min(), wz.max() - wz.min())
@@ -80,7 +80,7 @@ def write_map(track_dir, xy, max_size=1024, margin=20, line=10):
     pts = np.column_stack([(wx + x_off) / scale_factor, (wz + z_off) / scale_factor])
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    p = [tuple(q) for q in pts] + [tuple(pts[0])]
+    p = [tuple(q) for q in pts] + ([tuple(pts[0])] if closed else [])
     d.line(p, fill=(255, 255, 255, 255), width=line, joint="curve")
     img.save(track_dir / "map.png")
     (track_dir / "data" / "map.ini").write_text(
@@ -90,55 +90,61 @@ def write_map(track_dir, xy, max_size=1024, margin=20, line=10):
         f"MAX_SIZE={max_size}\nDRAWING_SIZE={line}\n")
 
 
-def write_outline(path, xy, start_i, size=(365, 365)):
+def write_outline(path, xy, gates, closed=True, size=(365, 365)):
+    """gates: indices of start (and finish) points."""
     img = Image.new("RGBA", size, (0, 0, 0, 0))
     pts, _ = _fit(xy, size[0], size[1], 20)
     d = ImageDraw.Draw(img)
-    p = [tuple(q) for q in pts] + [tuple(pts[0])]
+    p = [tuple(q) for q in pts] + ([tuple(pts[0])] if closed else [])
     d.line(p, fill=(255, 255, 255, 255), width=6, joint="curve")
-    sx, sy = pts[start_i]
-    d.ellipse([sx - 7, sy - 7, sx + 7, sy + 7], fill=(230, 40, 40, 255))
+    for gi, col in zip(gates, [(40, 200, 60, 255), (230, 40, 40, 255)] if len(gates) > 1 else [(230, 40, 40, 255)]):
+        sx, sy = pts[gi]
+        d.ellipse([sx - 7, sy - 7, sx + 7, sy + 7], fill=col)
     img.save(path)
 
 
-def write_preview(path, terrain, xy, size=(1022, 575)):
-    """Hill-shaded top-down render of the generated terrain with the road on top."""
-    X, Y, H = terrain
-    gy, gx = np.gradient(H)
+def write_preview(path, dem_fn, xy, closed=True, size=(1022, 575)):
+    """Hill-shaded top-down render of the real terrain with the road on top."""
+    pad = 0.08 * max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1])) + 100
+    lo, hi = xy.min(axis=0) - pad, xy.max(axis=0) + pad
+    cell = max(hi - lo) / 900
+    xs = np.arange(lo[0], hi[0], cell)
+    ys = np.arange(lo[1], hi[1], cell)
+    X, Y = np.meshgrid(xs, ys)
+    H = dem_fn(X, Y)
+    gy, gx = np.gradient(H, cell)
     light = np.array([-1.0, 1.0, 1.4])
     light /= np.linalg.norm(light)
-    n = np.dstack([-gx, -gy, np.ones_like(H) * 1.0])
+    n = np.dstack([-gx * 3, -gy * 3, np.ones_like(H)])
     n /= np.linalg.norm(n, axis=2, keepdims=True)
     shade = np.clip(n @ light, 0, 1)
     hn = (H - H.min()) / max(np.ptp(H), 1e-6)
     base = np.dstack([0.25 + 0.25 * hn, 0.42 + 0.2 * hn, 0.2 + 0.1 * hn])
     rgb = base * (0.35 + 0.75 * shade[..., None])
     img = Image.fromarray((np.clip(rgb[::-1], 0, 1) * 255).astype(np.uint8))
-    # road
-    px = (xy[:, 0] - X[0, 0]) / (X[0, 1] - X[0, 0])
-    py = (H.shape[0] - 1) - (xy[:, 1] - Y[0, 0]) / (Y[1, 0] - Y[0, 0])
+    px = (xy[:, 0] - xs[0]) / cell
+    py = (len(ys) - 1) - (xy[:, 1] - ys[0]) / cell
     d = ImageDraw.Draw(img)
-    p = list(zip(px, py)) + [(px[0], py[0])]
-    d.line(p, fill=(55, 55, 58), width=max(3, int(8 / (X[0, 1] - X[0, 0]))), joint="curve")
-    # crop/letterbox to the AC preview aspect
+    p = list(zip(px, py)) + ([(px[0], py[0])] if closed else [])
+    d.line(p, fill=(50, 50, 55), width=max(3, int(10 / cell)), joint="curve")
     img.thumbnail(size, Image.LANCZOS)
     canvas = Image.new("RGB", size, (20, 20, 20))
     canvas.paste(img, ((size[0] - img.width) // 2, (size[1] - img.height) // 2))
-    canvas.filter(ImageFilter.SMOOTH).save(path)
+    canvas.save(path)
 
 
-def write_ui(track_dir, cfg, length_m, n_pits, latlon):
+def write_ui(track_dir, cfg, length_m, n_pits, latlon, closed=True):
     ui = {
         "name": cfg.get("display_name", cfg["name"]),
         "description": cfg.get("description", "Generated from OpenStreetMap and public elevation data."),
-        "tags": ["circuit", "street", "original"],
+        "tags": (["circuit"] if closed else ["point to point", "a to b"]) + ["street", "original"],
         "geotags": [f"{latlon[0]:.5f}", f"{latlon[1]:.5f}"],
         "country": cfg.get("country", ""),
         "city": cfg.get("city", ""),
         "length": f"{length_m:.0f}",
         "width": f"{cfg['road']['width']:.0f}",
         "pitboxes": str(n_pits),
-        "run": "clockwise" if cfg.get("_clockwise") else "counter-clockwise",
+        "run": ("clockwise" if cfg.get("_clockwise") else "counter-clockwise") if closed else "A to B",
         "author": cfg.get("author", ""),
         "version": "0.1",
         "url": "",
@@ -147,7 +153,7 @@ def write_ui(track_dir, cfg, length_m, n_pits, latlon):
     (track_dir / "ui" / "ui_track.json").write_text(json.dumps(ui, indent=2))
 
 
-def write_route_debug(path, graph, route_xy, waypoints_xy, size=1400):
+def write_route_debug(path, graph, route_xy, waypoints_xy, size=1400, closed=True):
     """All OSM roads in grey, the routed loop in red, numbered waypoints."""
     allxy = np.vstack([route_xy, waypoints_xy])
     lo, hi = allxy.min(axis=0) - 150, allxy.max(axis=0) + 150
@@ -163,11 +169,11 @@ def write_route_debug(path, graph, route_xy, waypoints_xy, size=1400):
         for b, _ in nbrs:
             if a < b:
                 d.line([px(graph.coords[a]), px(graph.coords[b])], fill=(170, 170, 170), width=2)
-    pts = [px(p) for p in route_xy] + [px(route_xy[0])]
+    pts = [px(p) for p in route_xy] + ([px(route_xy[0])] if closed else [])
     d.line(pts, fill=(220, 30, 30), width=4)
     # direction arrows every ~1/20 of the lap
     for i in range(0, len(route_xy), max(1, len(route_xy) // 20)):
-        j = (i + 1) % len(route_xy)
+        j = min(i + 1, len(route_xy) - 1)
         x0, y0 = px(route_xy[i])
         x1, y1 = px(route_xy[j])
         d.ellipse([x0 - 5, y0 - 5, x0 + 5, y0 + 5], outline=(120, 0, 0), width=2)

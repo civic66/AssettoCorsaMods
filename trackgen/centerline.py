@@ -54,10 +54,14 @@ def curvature_radius(xy, closed=True):
     """Signed turning radius at each point (positive = turning left)."""
     t = tangents(xy, closed)
     ang = np.arctan2(t[:, 1], t[:, 0])
-    dang = np.diff(np.unwrap(np.concatenate([ang, ang[:1]] if closed else ang)))
-    if not closed:
+    if closed:
+        dang = np.angle(np.exp(1j * (np.roll(ang, -1) - ang)))
+        ds = np.hypot(*(np.roll(xy, -1, axis=0) - xy).T)
+    else:
+        dang = np.angle(np.exp(1j * np.diff(ang)))
         dang = np.concatenate([dang, dang[-1:]])
-    ds = np.hypot(*np.diff(np.vstack([xy, xy[:1]]) if closed else np.vstack([xy, xy[-1:]]), axis=0).T)
+        ds = np.hypot(*np.diff(xy, axis=0).T)
+        ds = np.concatenate([ds, ds[-1:]])
     with np.errstate(divide="ignore"):
         return ds / dang
 
