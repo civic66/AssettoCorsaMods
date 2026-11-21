@@ -22,6 +22,8 @@ def write_textures(tex_dir, size=512):
     u = np.linspace(0, 1, size)[None, :]
     edge = ((u > 0.015) & (u < 0.035)) | ((u > 0.965) & (u < 0.985))
     rgb = np.dstack([a, a, a * 1.02])
+    # same asphalt without the edge lines, for paved shoulders / run-off
+    Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8)).save(tex_dir / "asphalt_plain.png")
     rgb[np.broadcast_to(edge, (size, size))] = 0.85
     Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8)).save(tex_dir / "asphalt.png")
 

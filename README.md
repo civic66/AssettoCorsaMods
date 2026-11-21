@@ -50,6 +50,11 @@ shortcut you don't want, add another waypoint on the road you meant.
 All other settings are optional: road width, shoulders, barrier distance, kerbs, smoothing,
 terrain size and `reverse: true` to drive the other way. The example file lists them all.
 
+**Paved shoulders:** a `road.paved_shoulder_m` (0.5 m) strip of plain asphalt runs outside the
+white edge line on both sides. In kerbed corners the kerb sits on it and the same width of
+paved run-off continues past the kerb's outer edge, tapering back over 6 m where the kerb ends.
+It is drivable `ROAD` surface; the grass begins where the asphalt ends.
+
 **Kerbs:** every corner gets raised red/white rumble kerbs on both sides, 1 m wide and 5 cm
 high, using AC's built-in `KERB` surface. A corner is the whole stretch where the road keeps
 turning one way (radius under `kerbs.extent_radius_m`, 1000 m), including the gentler entry and
@@ -60,7 +65,7 @@ them off.
 
 **Brake markers:** corners whose tightest point is under `brake_markers.max_radius_m` (80 m)
 and that turn at least 30° get 200/150/100/50 m foam boards: 1 × 1 m, bold black numbers on
-lightly dirty white foam. They stand on the outside of the approach, 1 m beyond the kerb line,
+lightly dirty white foam. They stand on the outside of the approach on the grass, 1 m beyond the kerb and its paved run-off,
 facing oncoming cars. Distances count back to the corner's estimated turn-in: the point where
 the bend reaches half its peak tightness (`turn_in_fraction`). On compact circuit corners that is
 just before the tightest part; on long highway curves it skips the gentle lead-in. Use
@@ -144,7 +149,7 @@ Content Manager (Settings → Assetto Corsa → System), drive one clean lap wit
 
 | Object             | Meaning in AC                                              |
 |--------------------|------------------------------------------------------------|
-| `1ROAD` …          | physical asphalt (`ROAD` surface, built into AC)           |
+| `1ROAD` …          | physical asphalt: road, paved shoulders and run-off (`ROAD` surface) |
 | `1GRASS` …         | physical grass (shoulders + terrain)                       |
 | `1KERB` …          | red/white rumble kerbs on corners (AC's built-in `KERB` surface) |
 | `brake_board_<d>`, `brake_boards_foam` | brake-marker boards (visual only)  |

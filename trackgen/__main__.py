@@ -22,7 +22,10 @@ DEFAULTS = {
     "display_name": None,
     "type": "loop",               # loop | point_to_point
     "reverse": False,
-    "road": {"width": 8.0, "shoulder": 3.0, "wall_offset": 6.0, "wall_height": 1.2},
+    # shoulder = grass strip width from the road edge; paved_shoulder_m = asphalt strip
+    # outside the edge line (and run-off of the same width behind every kerb)
+    "road": {"width": 8.0, "shoulder": 3.0, "paved_shoulder_m": 0.5,
+             "wall_offset": 6.0, "wall_height": 1.2},
     # red/white rumble kerbs on both sides of corners tighter than max_radius_m
     # red/white rumble kerbs along the whole of every corner (+ extend_m each end).
     # A corner = a stretch turning tighter than extent_radius_m whose tightest point is
@@ -50,6 +53,7 @@ DEFAULTS = {
 
 MATERIALS = {
     "asphalt": {"texture": "asphalt.png", "props": {"ksSpecular": 0.08, "ksSpecularEXP": 25.0}},
+    "asphalt_plain": {"texture": "asphalt_plain.png", "props": {"ksSpecular": 0.08, "ksSpecularEXP": 25.0}},
     "grass": {"texture": "grass.png", "props": {}},
     "barrier": {"texture": "barrier.png", "props": {"ksSpecular": 0.1, "ksSpecularEXP": 15.0}},
     "line": {"texture": "line.png", "props": {"ksAmbient": 0.55, "ksDiffuse": 0.5}},
@@ -145,6 +149,7 @@ def main():
     geo = TrackGeometry(xy, z, cfg, closed=closed)
     geo.report()
     meshes = geo.road_meshes()
+    meshes += geo.paved_meshes(start_num=len(meshes) + 1)
     shoulders = geo.shoulder_meshes(start_num=1)
     meshes += shoulders
     meshes += geo.terrain_meshes(dem_rel, start_num=1 + len(shoulders))

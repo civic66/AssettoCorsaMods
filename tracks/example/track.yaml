@@ -32,7 +32,8 @@ pit_boxes: 12
 
 road:
   width: 8.0                  # metres
-  shoulder: 3.0               # flat grass strip each side
+  shoulder: 3.0               # flat grass strip each side (measured from the road edge)
+  paved_shoulder_m: 0.5       # asphalt outside the edge line; also run-off behind kerbs
   wall_offset: 6.0            # barrier distance from road edge (null = none)
   wall_height: 1.2
 
@@ -52,7 +53,7 @@ brake_markers:                # foam distance boards before tighter corners
   max_radius_m: 80            # corner must get tighter than this...
   min_turn_deg: 30            # ...and turn at least this much
   size_m: 1.0                 # boards are size x size metres
-  offset_from_kerb_m: 1.0     # grass gap between kerb line and board
+  offset_from_kerb_m: 1.0     # grass between the kerb + paved run-off and the board
   zero_point: turn_in         # distances count to the estimated turn-in (or corner_start)
   turn_in_fraction: 0.5       # turn-in = where the bend reaches this share of its peak tightness
   zero_offset_m: 0            # shift every board; positive = closer to the corner

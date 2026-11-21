@@ -8,6 +8,7 @@ from .centerline import curvature_radius, gaussian_smooth, tangents
 from .mesh import Mesh, strip_chunks
 
 SHOULDER_DROP = 0.03  # shoulder sits slightly below the road edge
+PAVED_TAPER_M = 6.0  # paved run-off narrows back to the shoulder over this length
 TERRAIN_DROP = 0.15   # terrain under road/shoulder hidden just below them
 TERRAIN_TILE = 180    # cells per terrain tile side (keeps meshes < 65k vertices)
 
@@ -35,9 +36,39 @@ def _runs(mask, closed):
     return runs
 
 
-def conform_height(d, zc, dem, inner, blend):
-    """Height of the ground at distance d from the centreline."""
-    flat = zc - TERRAIN_DROP
+def _distance_to_mask(mask, closed):
+    """For each sample, how many samples away the nearest True sample is."""
+    n = len(mask)
+    reps = 3 if closed else 1
+    m = np.tile(mask, reps)
+    big = 10 * len(m)
+    fwd = np.empty(len(m))
+    last = -big
+    for i, v in enumerate(m):
+        if v:
+            last = i
+        fwd[i] = i - last
+    bwd = np.empty(len(m))
+    nxt = 2 * big
+    for i in range(len(m) - 1, -1, -1):
+        if m[i]:
+            nxt = i
+        bwd[i] = nxt - i
+    d = np.minimum(fwd, bwd)
+    return d[n:2 * n] if closed else d
+
+
+def conform_height(d, zc, dem, inner, blend, edge=None):
+    """Height of the ground at distance d from the centreline.
+
+    Under the road and paved area (d < edge) the terrain is hidden TERRAIN_DROP
+    below them; under the grass strip it sits just below the strip, so where the
+    strip ends (d = inner) the ground carries on flush instead of dropping; beyond
+    that it blends to the real ground over `blend` metres.
+    """
+    flat = zc - (SHOULDER_DROP + 0.03)
+    if edge is not None:
+        flat = np.where(d < edge, zc - TERRAIN_DROP, flat)
     w = _smoothstep((d - inner) / blend)
     return flat * (1 - w) + dem * w
 
@@ -98,24 +129,84 @@ class TrackGeometry:
             meshes.append(m)
         return meshes
 
+    def paved_width(self):
+        """Paved asphalt beyond each road edge, per centreline sample (both sides).
+
+        road.paved_shoulder_m everywhere; through kerbed corners the kerb sits on
+        the paved area and another paved_shoulder_m of run-off continues past the
+        kerb's outer edge. It tapers back over PAVED_TAPER_M after each kerb ends.
+        """
+        if getattr(self, "_paved", None) is not None:
+            return self._paved
+        rc = self.cfg["road"]
+        kc = self.cfg["kerbs"]
+        pw = rc.get("paved_shoulder_m", 0.0)
+        width = np.full(self.n, float(pw))
+        if kc.get("enabled", True) and pw > 0:
+            mask = np.zeros(self.n, dtype=bool)
+            for r in self.corner_runs():
+                mask[r] = True
+            if mask.any():
+                step = self.length / max(len(self.s) - 1, 1)
+                dist = _distance_to_mask(mask, self.closed) * step  # metres to nearest kerb
+                width += kc["width_m"] * np.clip(1.0 - dist / PAVED_TAPER_M, 0.0, 1.0)
+        self._paved = width
+        return width
+
+    def ground_edge(self):
+        """Distance from the centreline out to which terrain is buried deep
+        (under the road, paved strips and kerbs)."""
+        return self.cfg["road"]["width"] / 2 + float(self.paved_width().max()) + 0.1
+
+    def paved_meshes(self, start_num):
+        """Plain asphalt shoulders / run-off strips either side (<n>ROAD, drivable)."""
+        pw = self.paved_width()
+        if pw.max() <= 0:
+            return []
+        hw = self.cfg["road"]["width"] / 2
+        idx = self.rows
+        meshes = []
+        num = start_num
+        for side in (1, -1):
+            inner = np.full(len(idx), hw)
+            outer = hw + pw[idx]
+            off = np.stack([inner, outer], 1) * side
+            if side < 0:
+                off = off[:, ::-1]  # columns right -> left so the faces point up
+            P = self.xy[idx][:, None, :] + self.nrm[idx][:, None, :] * off[:, :, None]
+            Z = np.repeat(self.z[idx][:, None], 2, axis=1)
+            V = np.dstack([P, Z])
+            UV = np.dstack([off / 8.0, np.broadcast_to(self.s[:len(idx), None] / 8.0, (len(idx), 2))])
+            for a, b in strip_chunks(len(idx), 2):
+                m = Mesh(f"{num}ROAD", "asphalt_plain")
+                m.add_grid(V[a:b + 1], UV[a:b + 1])
+                meshes.append(m)
+                num += 1
+        return meshes
+
     def shoulder_meshes(self, start_num):
+        """Grass strips from the edge of the paved area out to road.shoulder."""
         rc = self.cfg["road"]
         hw = rc["width"] / 2
         sw = rc["shoulder"]
         if sw <= 0:
             return []
         idx = self.rows
+        pw = self.paved_width()[idx]
+        if (pw > sw - 0.3).any():
+            print("  warning: road.shoulder is barely wider than the paved area + kerb; grass strip clipped")
         meshes = []
         num = start_num
         for side in (1, -1):
-            off = np.array([hw, hw + sw]) * side
+            inner = hw + np.minimum(pw, sw - 0.3)
+            outer = np.full(len(idx), hw + sw)
+            off = np.stack([inner, outer], 1) * side
             if side < 0:
-                off = off[::-1]  # keep column order right->left so winding is consistent
-            P = self.xy[idx][:, None, :] + self.nrm[idx][:, None, :] * off[None, :, None]
+                off = off[:, ::-1]  # keep column order right->left so winding is consistent
+            P = self.xy[idx][:, None, :] + self.nrm[idx][:, None, :] * off[:, :, None]
             Z = np.repeat(self.z[idx][:, None] - SHOULDER_DROP, 2, axis=1)
             V = np.dstack([P, Z])
-            UV = np.dstack([np.broadcast_to(off / 4.0, (len(idx), 2)),
-                            np.broadcast_to(self.s[:len(idx), None] / 4.0, (len(idx), 2))])
+            UV = np.dstack([off / 4.0, np.broadcast_to(self.s[:len(idx), None] / 4.0, (len(idx), 2))])
             for a, b in strip_chunks(len(idx), 2):
                 m = Mesh(f"{num}GRASS", "grass")
                 m.add_grid(V[a:b + 1], UV[a:b + 1])
@@ -193,7 +284,7 @@ class TrackGeometry:
         w, h = kc["width_m"], kc["height_m"]
         overlap = 0.15  # kerb starts slightly on the road so there's no gap
         # cross-section from the road edge outwards: (lateral offset, height above road)
-        prof = [(hw - overlap, 0.003), (hw + 0.7 * w, h), (hw + w, h), (hw + w, -SHOULDER_DROP)]
+        prof = [(hw - overlap, 0.003), (hw + 0.7 * w, h), (hw + w, h), (hw + w, -0.005)]
         meshes = []
         num = start_num
         runs = self.corner_runs()
@@ -241,8 +332,9 @@ class TrackGeometry:
         it skips the gentle lead-in. zero_point: corner_start uses where it starts to bend.
 
         Boards stand on the outside of the approach (the side you set up on before
-        turning in), facing oncoming cars, offset_from_kerb_m beyond where the kerb
-        ends. They are visual only (no physics), like the foam boards real
+        turning in), facing oncoming cars, with offset_from_kerb_m of grass between
+        them and the kerb line plus its paved run-off. They are visual only (no
+        physics), like the foam boards real
         circuits use. Boards that would land inside another corner or behind the
         start of an open road are skipped.
         """
@@ -253,7 +345,10 @@ class TrackGeometry:
         kc = self.cfg["kerbs"]
         hw = rc["width"] / 2
         kerb_w = kc["width_m"] if kc.get("enabled", True) else 0.0
-        lateral = hw + kerb_w + bc["offset_from_kerb_m"] + bc["thickness_m"] / 2
+        # board centre: past the kerb and its paved run-off, then a strip of grass,
+        # then half the board (its 1 m width runs across the road direction)
+        runoff = rc.get("paved_shoulder_m", 0.0)
+        lateral = hw + kerb_w + runoff + bc["offset_from_kerb_m"] + bc["size_m"] / 2
         if rc.get("wall_offset") is not None and lateral + bc["size_m"] / 2 > hw + rc["wall_offset"] - 0.3:
             print("  brake markers: skipped, the wall is too close to the road for boards")
             return [], 0
@@ -297,18 +392,24 @@ class TrackGeometry:
                 # keep clear of any other part of the road (crossings, hairpins)
                 if np.hypot(*(self.xy - C).T).min() < lateral - 0.5:
                     continue
-                if lateral + T / 2 <= inner:
-                    ground = float(self.z[i] - SHOULDER_DROP)  # standing on the grass shoulder
-                else:
-                    ground = float(conform_height(lateral, self.z[i], dem_fn(C[None, 0], C[None, 1]),
-                                                  inner, blend)[0])
+                # ground under the board's inner and outer edges (grass shoulder or terrain)
+                g = []
+                for lat_e in (lateral - W / 2, lateral + W / 2):
+                    if lat_e <= inner:
+                        g.append(float(self.z[i] - SHOULDER_DROP))
+                    else:
+                        Ce = self.xy[i] + self.nrm[i] * lat_e * side
+                        g.append(float(conform_height(lat_e, self.z[i], dem_fn(Ce[None, 0], Ce[None, 1]),
+                                                      inner, blend, self.ground_edge())[0]))
+                ground = min(g)          # base sits on the lower side...
+                rise = max(g) - ground   # ...and the board is that much taller
                 f = -np.append(self.t[i], 0.0)          # front faces oncoming cars
                 r = -np.append(self.nrm[i], 0.0)        # viewer's right when reading it
                 up = np.array([0.0, 0.0, 1.0])
                 base = np.array([C[0], C[1], ground - 0.05])
 
                 def P(a, b, h):
-                    return base + r * a * W / 2 + f * b * T / 2 + up * h * (H + 0.05)
+                    return base + r * a * W / 2 + f * b * T / 2 + up * h * (H + 0.05 + rise)
 
                 fronts[d].add_quads([[P(-1, 1, 0), P(1, 1, 0), P(1, 1, 1), P(-1, 1, 1)]],
                                     [[0.003, 0.003], [0.997, 0.003], [0.997, 0.997], [0.003, 0.997]])
@@ -403,7 +504,7 @@ class TrackGeometry:
                 if not mask.any():
                     continue
                 dem = dem_fn(X, Y)
-                H = np.where(np.isfinite(D), conform_height(D, ZC, dem, inner, tc["blend_m"]), dem)
+                H = np.where(np.isfinite(D), conform_height(D, ZC, dem, inner, tc["blend_m"], self.ground_edge()), dem)
                 mm = Mesh(f"{num}GRASS", "grass")
                 mm.add_grid(np.dstack([X, Y, H]), np.dstack([X / 8.0, Y / 8.0]), flip=True, mask=mask)
                 mm.compact()
@@ -465,7 +566,7 @@ class TrackGeometry:
                 if fwd.all():
                     break
                 keep[idx[~fwd]] = False
-            base =conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, blend)
+            base = conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, blend, self.ground_edge())
             if keep.all():
                 runs = [list(range(n)) + ([0] if self.closed else [])]
             else:
