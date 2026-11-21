@@ -24,7 +24,7 @@ DEFAULTS = {
     "reverse": False,
     # shoulder = grass strip width from the road edge; paved_shoulder_m = asphalt strip
     # outside the edge line (and run-off of the same width behind every kerb)
-    "road": {"width": 8.0, "shoulder": 3.0, "paved_shoulder_m": 0.5,
+    "road": {"width": 8.0, "shoulder": 3.0, "paved_shoulder_m": 1.0,
              "wall_offset": 6.0, "wall_height": 1.2},
     # red/white rumble kerbs on both sides of corners tighter than max_radius_m
     # red/white rumble kerbs along the whole of every corner (+ extend_m each end).

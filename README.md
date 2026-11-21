@@ -50,7 +50,7 @@ shortcut you don't want, add another waypoint on the road you meant.
 All other settings are optional: road width, shoulders, barrier distance, kerbs, smoothing,
 terrain size and `reverse: true` to drive the other way. The example file lists them all.
 
-**Paved shoulders:** a `road.paved_shoulder_m` (0.5 m) strip of plain asphalt runs outside the
+**Paved shoulders:** a `road.paved_shoulder_m` (1 m) strip of plain asphalt runs outside the
 white edge line on both sides. In kerbed corners the kerb sits on it and the same width of
 paved run-off continues past the kerb's outer edge, tapering back over 6 m where the kerb ends.
 It is drivable `ROAD` surface; the grass begins where the asphalt ends.

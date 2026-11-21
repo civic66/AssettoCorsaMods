@@ -33,7 +33,7 @@ pit_boxes: 12
 road:
   width: 8.0                  # metres
   shoulder: 3.0               # flat grass strip each side (measured from the road edge)
-  paved_shoulder_m: 0.5       # asphalt outside the edge line; also run-off behind kerbs
+  paved_shoulder_m: 1.0       # asphalt outside the edge line; also run-off behind kerbs
   wall_offset: 6.0            # barrier distance from road edge (null = none)
   wall_height: 1.2
 
