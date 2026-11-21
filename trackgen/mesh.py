@@ -5,7 +5,7 @@ which is also Blender's frame. OBJ output is written Y-up (x, z, -y), the
 convention Blender's OBJ importer expects by default.
 
 Assetto Corsa naming rules used here:
-  <n>ROAD, <n>GRASS, <n>BARRIER  -> physical surfaces (n = unique number)
+  <n>ROAD, <n>GRASS -> physical surfaces, <n>WALL -> collision walls (n = number)
   anything else                  -> visual only
   Meshes are split so no object exceeds 65k vertices (KN5 uses 16-bit indices).
 """

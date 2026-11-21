@@ -10,7 +10,7 @@ or a **point-to-point** road (A to B). You give it a list of lat/lon waypoints; 
 3. smooths the centreline and builds a road ribbon, grass shoulders, terrain that blends into the road, and barriers,
 4. places the AC spawn/timing objects (grid, pits, hotlap start, start/finish line or A/B gates),
 5. writes a **complete, ready-to-play AC track folder**, including the `.kn5` model, `ui_track.json`,
-   preview, outline, minimap + `map.ini` and `surfaces.ini`.
+   preview, outline and minimap + `map.ini`.
 
 Copy that folder into `assettocorsa/content/tracks/` and drive. The Blender/ksEditor route
 (below) is optional, for when you want to add scenery or nicer shaders.
@@ -84,7 +84,7 @@ output/<name>/
   content/tracks/<name>/ the folder that goes into Assetto Corsa (ready to play)
     <name>.kn5           road, terrain, barriers, spawn points
     ui/ui_track.json, preview.png, outline.png
-    data/surfaces.ini, map.ini
+    data/map.ini
     map.png
 ```
 
@@ -128,7 +128,8 @@ Content Manager (Settings → Assetto Corsa → System), drive one clean lap wit
 |--------------------|------------------------------------------------------------|
 | `1ROAD` …          | physical asphalt (`ROAD` surface, built into AC)           |
 | `1GRASS` …         | physical grass (shoulders + terrain)                       |
-| `1BARRIER` …       | physical wall, defined in the track's `data/surfaces.ini`  |
+| `1WALL` …          | collision walls (AC's built-in `WALL` type), faces point at the road |
+| `wall_back_n`      | visual-only back side of the walls                         |
 | `start_line`       | visual only                                                |
 | `AC_START_n`       | grid slots, `AC_PIT_n` pit boxes, `AC_HOTLAP_START_0`      |
 | `AC_TIME_0_L/R`    | start/finish line gates                                    |

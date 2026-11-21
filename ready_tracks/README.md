@@ -7,7 +7,8 @@ Each folder here is a complete Assetto Corsa track. To install, copy the folder
 <Steam>/steamapps/common/assettocorsa/content/tracks/
 ```
 
-so you end up with `.../content/tracks/ar12_gentry/ar12_gentry.kn5`. Then pick it in
+so you end up with `.../content/tracks/ar12_gentry/ar12_gentry.kn5`. If you're updating
+an older copy, delete the old folder first rather than copying over it. Then pick it in
 Content Manager or the AC launcher. You don't need Blender or ksEditor.
 
 ## ar12_gentry: AR-12 Bentonville to Gentry (point-to-point)

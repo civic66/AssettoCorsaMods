@@ -15,7 +15,7 @@ from .geo import LocalProjection
 from .kn5 import write_kn5
 from .mesh import write_mtl, write_obj
 from .osm import RoadGraph, fetch_roads, route_loop, route_open
-from .package import (SURFACES_INI, write_map, write_outline, write_preview, write_route_debug,
+from .package import (write_map, write_outline, write_preview, write_route_debug,
                       write_textures, write_ui)
 
 DEFAULTS = {
@@ -162,7 +162,7 @@ def main():
     # ------------------------------------------------ AC folder (ready to play)
     textures = {v["texture"]: (src_dir / "textures" / v["texture"]).read_bytes() for v in MATERIALS.values()}
     write_kn5(track_dir / f"{name}.kn5", name, meshes, markers, MATERIALS, textures)
-    (track_dir / "data" / "surfaces.ini").write_text(SURFACES_INI)
+    # ROAD, GRASS and WALL are built-in AC surfaces, so no data/surfaces.ini is needed
     write_map(track_dir, xy, closed=closed)
     write_outline(track_dir / "ui" / "outline.png", xy, gate_idx, closed=closed)
     write_preview(track_dir / "ui" / "preview.png", dem_rel, xy, closed=closed)

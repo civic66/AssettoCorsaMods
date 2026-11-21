@@ -193,15 +193,23 @@ class TrackGeometry:
         return meshes
 
     # ------------------------------------------------------------------ barriers
-    def _wall(self, P, base, height, name, uv_s):
+    def _wall(self, P, base, height, num, uv_s, flip):
+        """A barrier strip along polyline P.
+
+        Returns the physical wall (<num>WALL, AC's collision surface type), whose
+        faces point towards the road, and a visual-only back face so the barrier
+        also looks solid from outside. With flip=False the faces point to the
+        right of P's direction of travel.
+        """
         bot = np.column_stack([P, base - 0.5])
         top = np.column_stack([P, base + height])
         V = np.stack([bot, top], axis=1)
         UV = np.dstack([np.stack([uv_s, uv_s], 1) / 4.0, np.broadcast_to([0.0, 1.0], (len(P), 2))])
-        mm = Mesh(name, "barrier")
-        mm.add_grid(V, UV, flip=False)  # double sided: both windings
-        mm.add_grid(V, UV, flip=True)
-        return mm
+        wall = Mesh(f"{num}WALL", "barrier")
+        wall.add_grid(V, UV, flip=flip)
+        back = Mesh(f"wall_back_{num}", "barrier")  # no surface prefix -> no physics
+        back.add_grid(V, UV, flip=not flip)
+        return [wall, back]
 
     def barrier_meshes(self, dem_fn, start_num):
         rc = self.cfg["road"]
@@ -224,7 +232,19 @@ class TrackGeometry:
                 blk = P[k:k + 500]
                 d = np.hypot(blk[:, None, 0] - self.xy[None, :, 0], blk[:, None, 1] - self.xy[None, :, 1])
                 keep[k:k + 500] = d.min(axis=1) > dist - 0.75
-            base = conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, blend)
+            # drop kinks where the offset line runs backwards (inside of a tight curve);
+            # repeat because removing a point can expose the next one
+            for _ in range(10):
+                idx = np.nonzero(keep)[0]
+                nxt = np.roll(idx, -1)
+                step = P[nxt] - P[idx]
+                fwd = np.einsum("ij,ij->i", step, self.t[idx]) > 0
+                if not self.closed:
+                    fwd[-1] = True
+                if fwd.all():
+                    break
+                keep[idx[~fwd]] = False
+            base =conform_height(dist, self.z, dem_fn(P[:, 0], P[:, 1]), inner, blend)
             if keep.all():
                 runs = [list(range(n)) + ([0] if self.closed else [])]
             else:
@@ -246,7 +266,8 @@ class TrackGeometry:
                 s = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(P[run], axis=0).T))])
                 for a, b in strip_chunks(len(run), 4):
                     sl = slice(a, b + 1)
-                    meshes.append(self._wall(P[run][sl], base[run][sl], height, f"{num}BARRIER", s[sl]))
+                    # left wall (side=+1) must face right, towards the road
+                    meshes += self._wall(P[run][sl], base[run][sl], height, num, s[sl], flip=side < 0)
                     num += 1
         if not self.closed:
             # end caps across the road at both ends
@@ -254,7 +275,9 @@ class TrackGeometry:
                 lat = np.linspace(-dist, dist, 12)
                 P = self.xy[i] + self.nrm[i] * lat[:, None]
                 base = np.full(len(lat), self.z[i] - TERRAIN_DROP)
-                meshes.append(self._wall(P, base, height, f"{num}BARRIER", lat - lat[0]))
+                # cap rows run right->left, so unflipped faces point forward:
+                # the start cap faces forward, the end cap faces back
+                meshes += self._wall(P, base, height, num, lat - lat[0], flip=(i != 0))
                 num += 1
         return meshes
 
