@@ -36,6 +36,14 @@ road:
   wall_offset: 6.0            # barrier distance from road edge (null = none)
   wall_height: 1.2
 
+kerbs:                        # red/white rumble kerbs on both sides of corners
+  enabled: true
+  max_radius_m: 150           # bends tighter than this count as corners
+  min_turn_deg: 20            # ...and must change direction at least this much
+  width_m: 1.0
+  height_m: 0.05              # raised outer edge (AC KERB surface = rumble in FFB)
+  stripe_m: 1.0               # length of each red / white block
+
 smoothing:
   xy_m: 4.0                   # bigger = rounder corners
   z_m: 25.0                   # bigger = smoother elevation (DEM is noisy)

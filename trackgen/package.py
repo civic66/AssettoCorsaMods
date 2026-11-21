@@ -39,6 +39,16 @@ def write_textures(tex_dir, size=512):
 
     Image.new("RGB", (64, 64), (235, 235, 235)).save(tex_dir / "line.png")
 
+    # kerb: one red and one white block per texture repeat along the road (v),
+    # with a darker groove between blocks and a little grime
+    v = np.linspace(0, 1, size, endpoint=False)[:, None]
+    red = np.broadcast_to(v < 0.5, (size, size))
+    kerb = np.where(red[..., None], np.array([0.80, 0.08, 0.07]), np.array([0.93, 0.93, 0.91]))
+    groove = (np.abs(v - 0.5) < 0.006) | (v < 0.006) | (v > 0.994)
+    kerb[np.broadcast_to(groove, (size, size))] *= 0.55
+    kerb *= (0.92 + 0.08 * rng.random((size, size)) - 0.05 * _noise(size, 5, 32))[..., None]
+    Image.fromarray((np.clip(kerb, 0, 1) * 255).astype(np.uint8)).save(tex_dir / "kerb.png")
+
 
 # ---------------------------------------------------------------- map / outline
 def _fit(xy, w, h, margin):

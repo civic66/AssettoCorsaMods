@@ -4,7 +4,7 @@ Works for closed loops (circuits) and open roads (point-to-point / A-to-B).
 """
 import numpy as np
 
-from .centerline import curvature_radius, tangents
+from .centerline import curvature_radius, gaussian_smooth, tangents
 from .mesh import Mesh, strip_chunks
 
 SHOULDER_DROP = 0.03  # shoulder sits slightly below the road edge
@@ -15,6 +15,24 @@ TERRAIN_TILE = 180    # cells per terrain tile side (keeps meshes < 65k vertices
 def _smoothstep(t):
     t = np.clip(t, 0.0, 1.0)
     return t * t * (3 - 2 * t)
+
+
+def _runs(mask, closed):
+    """Consecutive True index runs; on a closed loop a run may wrap past the end."""
+    n = len(mask)
+    if mask.all():
+        return [list(range(n))]
+    start = int(np.argmin(mask)) if closed else 0
+    runs, cur = [], []
+    for i in (np.arange(n) + start) % n:
+        if mask[i]:
+            cur.append(int(i))
+        elif cur:
+            runs.append(cur)
+            cur = []
+    if cur:
+        runs.append(cur)
+    return runs
 
 
 def conform_height(d, zc, dem, inner, blend):
@@ -103,6 +121,99 @@ class TrackGeometry:
                 m.add_grid(V[a:b + 1], UV[a:b + 1])
                 meshes.append(m)
                 num += 1
+        return meshes
+
+    # ------------------------------------------------------------------ kerbs
+    def corner_runs(self):
+        """Index runs of the centreline that are corners (radius < kerbs.max_radius_m).
+
+        Curvature is smoothed first so OSM wiggles don't count as corners; nearby
+        corners are merged, short blips dropped, and each run is extended a little
+        before and after so the kerb covers entry and exit.
+        """
+        kc = self.cfg["kerbs"]
+        step = self.length / max(len(self.s) - 1, 1)
+        k = 1.0 / curvature_radius(self.xy, self.closed)  # signed curvature
+        k = gaussian_smooth(np.nan_to_num(k), kc["smooth_m"] / step, self.closed)
+        mask = np.abs(k) > 1.0 / kc["max_radius_m"]
+        n = self.n
+        # merge gaps, then drop short runs, then extend
+        gap = int(kc["merge_gap_m"] / step)
+        ext = int(kc["extend_m"] / step)
+        runs = _runs(mask, self.closed)
+        merged = []
+        for r in runs:
+            if merged and (r[0] - merged[-1][-1]) % n <= gap + 1:
+                last = merged[-1]
+                merged[-1] = last + [(last[-1] + j) % n for j in range(1, (r[0] - last[-1]) % n)] + r
+            else:
+                merged.append(r)
+        if self.closed and len(merged) > 1 and (merged[0][0] - merged[-1][-1]) % n <= gap + 1:
+            last = merged.pop()
+            merged[0] = last + [(last[-1] + j) % n for j in range(1, (merged[0][0] - last[-1]) % n)] + merged[0]
+        heading = np.arctan2(self.t[:, 1], self.t[:, 0])
+        out = []
+        for r in merged:
+            if len(r) * step < kc["min_length_m"]:
+                continue
+            # total change of direction through the corner (ignores small OSM kinks)
+            turn = np.abs(np.sum(np.angle(np.exp(1j * np.diff(heading[r])))))
+            if np.degrees(turn) < kc["min_turn_deg"]:
+                continue
+            pre = [(r[0] - j) % n for j in range(ext, 0, -1)]
+            post = [(r[-1] + j) % n for j in range(1, ext + 1)]
+            if not self.closed:
+                pre = [i for i in range(r[0] - ext, r[0]) if i >= 0]
+                post = [i for i in range(r[-1] + 1, r[-1] + ext + 1) if i < n]
+            out.append(pre + r + post)
+        if self.closed and len(out) == 1 and len(out[0]) >= n:
+            out = [list(range(n)) + [0]]  # the whole loop is one corner
+        return out
+
+    def kerb_meshes(self, start_num):
+        """Raised red/white rumble kerbs on both sides of every corner (<n>KERB)."""
+        kc = self.cfg["kerbs"]
+        if not kc.get("enabled", True):
+            return []
+        hw = self.cfg["road"]["width"] / 2
+        w, h = kc["width_m"], kc["height_m"]
+        overlap = 0.15  # kerb starts slightly on the road so there's no gap
+        # cross-section from the road edge outwards: (lateral offset, height above road)
+        prof = [(hw - overlap, 0.003), (hw + 0.7 * w, h), (hw + w, h), (hw + w, -SHOULDER_DROP)]
+        meshes = []
+        num = start_num
+        runs = self.corner_runs()
+        for run in runs:
+            run = np.array(run)
+            P0 = self.xy[run]
+            ds = np.hypot(*np.diff(P0, axis=0).T)
+            s = np.concatenate([[0.0], np.cumsum(ds)])
+            for side in (1, -1):
+                cols = prof if side > 0 else prof[::-1]  # columns must run right -> left
+                off = np.array([c[0] for c in cols]) * side
+                dz = np.array([c[1] for c in cols])
+                P = P0[:, None, :] + self.nrm[run][:, None, :] * off[None, :, None]
+                Z = self.z[run][:, None] + dz[None, :]
+                V = np.dstack([P, Z])
+                u = np.abs(off) - (hw - overlap)
+                u = u / max(u.max(), 1e-6)
+                UV = np.dstack([np.broadcast_to(u, (len(run), len(cols))),
+                                np.broadcast_to(s[:, None] / (2 * kc["stripe_m"]), (len(run), len(cols)))])
+                # on the inside of very tight bends the kerb would fold over itself:
+                # keep only rows where every column still moves forward
+                step = np.einsum("rcj,rj->rc", np.diff(P, axis=0), self.t[run][:-1])
+                ok_seg = (step > 0.05).all(axis=1)
+                for seg in _runs(ok_seg, closed=False):
+                    a0, b0 = seg[0], seg[-1] + 1  # rows a0..b0 inclusive
+                    if b0 - a0 < 2:
+                        continue
+                    for a, b in strip_chunks(b0 - a0 + 1, len(cols)):
+                        m = Mesh(f"{num}KERB", "kerb")
+                        m.add_grid(V[a0 + a:a0 + b + 1], UV[a0 + a:a0 + b + 1])
+                        meshes.append(m)
+                        num += 1
+        total = sum(len(r) for r in runs) * self.length / max(len(self.s) - 1, 1)
+        print(f"  kerbs: {len(runs)} corners, {total:.0f} m of corner each side")
         return meshes
 
     def line_mesh(self, name, s_at):

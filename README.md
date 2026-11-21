@@ -47,8 +47,12 @@ To get coordinates, right-click a spot in Google Maps or on openstreetmap.org an
 the lat/lon. Put a waypoint on every road you want to use. If the route takes a
 shortcut you don't want, add another waypoint on the road you meant.
 
-All other settings are optional: road width, shoulders, barrier distance, smoothing,
+All other settings are optional: road width, shoulders, barrier distance, kerbs, smoothing,
 terrain size and `reverse: true` to drive the other way. The example file lists them all.
+
+**Kerbs:** corners tighter than `kerbs.max_radius_m` (default 150 m) that turn at least
+`kerbs.min_turn_deg` (20°) get raised red/white rumble kerbs on both sides, 1 m wide and 5 cm
+high, using AC's built-in `KERB` surface. Set `kerbs: {enabled: false}` to turn them off.
 
 **Point-to-point roads:** add `type: point_to_point` and give the start and end as the first and
 last waypoints. To keep the router on one highway rather than shortcuts, list its OSM `ref`
@@ -128,6 +132,7 @@ Content Manager (Settings → Assetto Corsa → System), drive one clean lap wit
 |--------------------|------------------------------------------------------------|
 | `1ROAD` …          | physical asphalt (`ROAD` surface, built into AC)           |
 | `1GRASS` …         | physical grass (shoulders + terrain)                       |
+| `1KERB` …          | red/white rumble kerbs on corners (AC's built-in `KERB` surface) |
 | `1WALL` …          | collision walls (AC's built-in `WALL` type), faces point at the road |
 | `wall_back_n`      | visual-only back side of the walls                         |
 | `start_line`       | visual only                                                |

@@ -23,6 +23,10 @@ DEFAULTS = {
     "type": "loop",               # loop | point_to_point
     "reverse": False,
     "road": {"width": 8.0, "shoulder": 3.0, "wall_offset": 6.0, "wall_height": 1.2},
+    # red/white rumble kerbs on both sides of corners tighter than max_radius_m
+    "kerbs": {"enabled": True, "max_radius_m": 150.0, "width_m": 1.0, "height_m": 0.05,
+              "stripe_m": 1.0, "min_length_m": 10.0, "extend_m": 4.0, "merge_gap_m": 15.0,
+              "smooth_m": 6.0, "min_turn_deg": 20.0},
     "smoothing": {"xy_m": 4.0, "z_m": 25.0, "step_m": 2.0},
     "terrain": {"margin_m": 200.0, "grid_m": 3.0, "blend_m": 30.0},
     "elevation_zoom": 14,
@@ -39,6 +43,7 @@ MATERIALS = {
     "grass": {"texture": "grass.png", "props": {}},
     "barrier": {"texture": "barrier.png", "props": {"ksSpecular": 0.1, "ksSpecularEXP": 15.0}},
     "line": {"texture": "line.png", "props": {"ksAmbient": 0.55, "ksDiffuse": 0.5}},
+    "kerb": {"texture": "kerb.png", "props": {"ksSpecular": 0.1, "ksSpecularEXP": 20.0}},
 }
 
 
@@ -133,6 +138,7 @@ def main():
     shoulders = geo.shoulder_meshes(start_num=1)
     meshes += shoulders
     meshes += geo.terrain_meshes(dem_rel, start_num=1 + len(shoulders))
+    meshes += geo.kerb_meshes(start_num=1)
     meshes += geo.barrier_meshes(dem_rel, start_num=1)
     if closed:
         start = cfg["start_offset_m"]
