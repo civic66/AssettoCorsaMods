@@ -19,8 +19,9 @@ Content Manager or the AC launcher. You don't need Blender or ksEditor.
 * 28.1 km of road; 27.9 km from the start gate to the finish gate. 58 m of elevation change, max grade 7.9%.
 * 8 m wide road with 3 m grass shoulders, a 150 m strip of real terrain on each side,
   and barriers 8 m from the road edge. Barrier walls close off both ends of the road.
-* Red/white rumble kerbs on both sides of 17 corners, and 27 foam brake-marker boards
-  (200/150/100/50 m) before the 8 tighter ones. The boards have no collision.
+* Red/white rumble kerbs along the whole of every corner (4.3 km per side), and 36 foam
+  brake-marker boards (200/150/100/50 m, counted to each corner's turn-in) before the 11
+  tighter corners. The boards have no collision.
 * 6 pit boxes and a 6-car grid behind the start gate (`AC_AB_START`), and the finish gate
   (`AC_AB_FINISH`) 100 m before the end of the road.
 * Best in **Practice** or **Hotlap**. Like other point-to-point tracks in AC, lap-timing
