@@ -50,14 +50,18 @@ shortcut you don't want, add another waypoint on the road you meant.
 All other settings are optional: road width, shoulders, barrier distance, kerbs, smoothing,
 terrain size and `reverse: true` to drive the other way. The example file lists them all.
 
-**Kerbs:** corners tighter than `kerbs.max_radius_m` (default 150 m) that turn at least
-`kerbs.min_turn_deg` (20°) get raised red/white rumble kerbs on both sides, 1 m wide and 5 cm
-high, using AC's built-in `KERB` surface. Set `kerbs: {enabled: false}` to turn them off.
+**Kerbs:** every corner gets raised red/white rumble kerbs on both sides, 1 m wide and 5 cm
+high, using AC's built-in `KERB` surface. A corner is the whole stretch where the road keeps
+turning one way (radius under `kerbs.extent_radius_m`, 1000 m), including the gentler entry and
+exit. It counts if its tightest point is under `kerbs.max_radius_m` (150 m) and it turns at least
+`kerbs.min_turn_deg` (15°) in total. Kerbs run the full length of the corner plus `kerbs.extend_m`
+(10 m) at each end, and kerbs less than 15 m apart join up. Set `kerbs: {enabled: false}` to turn
+them off.
 
 **Brake markers:** corners whose tightest point is under `brake_markers.max_radius_m` (80 m)
 and that turn at least 30° get 200/150/100/50 m foam boards: 1 × 1 m, bold black numbers on
 lightly dirty white foam. They stand on the outside of the approach, 1 m beyond the kerb line,
-facing oncoming cars. Distances count back to where the corner's kerb begins. Boards that would
+facing oncoming cars. Distances count back to where the corner begins to turn. Boards that would
 land inside an earlier corner are skipped. Like real foam boards they have no collision.
 
 **Point-to-point roads:** add `type: point_to_point` and give the start and end as the first and

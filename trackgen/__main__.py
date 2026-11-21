@@ -24,9 +24,13 @@ DEFAULTS = {
     "reverse": False,
     "road": {"width": 8.0, "shoulder": 3.0, "wall_offset": 6.0, "wall_height": 1.2},
     # red/white rumble kerbs on both sides of corners tighter than max_radius_m
-    "kerbs": {"enabled": True, "max_radius_m": 150.0, "width_m": 1.0, "height_m": 0.05,
-              "stripe_m": 1.0, "min_length_m": 10.0, "extend_m": 4.0, "merge_gap_m": 15.0,
-              "smooth_m": 6.0, "min_turn_deg": 20.0},
+    # red/white rumble kerbs along the whole of every corner (+ extend_m each end).
+    # A corner = a stretch turning tighter than extent_radius_m whose tightest point is
+    # under max_radius_m and that turns at least min_turn_deg in total.
+    "kerbs": {"enabled": True, "max_radius_m": 150.0, "min_turn_deg": 15.0,
+              "extent_radius_m": 1000.0, "extend_m": 10.0, "merge_gap_m": 15.0,
+              "width_m": 1.0, "height_m": 0.05, "stripe_m": 1.0, "min_length_m": 10.0,
+              "smooth_m": 6.0},
     # foam brake-marker boards before tighter corners, on the outside of the approach
     "brake_markers": {"enabled": True, "distances_m": [200, 150, 100, 50],
                       "max_radius_m": 80.0, "min_turn_deg": 30.0,

@@ -124,65 +124,64 @@ class TrackGeometry:
         return meshes
 
     # ------------------------------------------------------------------ kerbs
-    def find_corners(self, max_radius_m, min_turn_deg, smooth_m=6.0, merge_gap_m=15.0, min_length_m=10.0):
-        """Corners along the centreline.
+    def find_corners(self, max_radius_m, min_turn_deg, smooth_m=6.0, extent_radius_m=1000.0,
+                     min_length_m=10.0):
+        """Corners along the centreline, each covering the whole bend.
 
-        Curvature is smoothed first so OSM wiggles don't count; runs tighter than
-        max_radius_m are merged when close together, and kept only if they are at
-        least min_length_m long and change direction by min_turn_deg in total.
-        Returns dicts: {"idx": centreline indices, "sign": +1 left / -1 right
-        (direction at corner entry), "min_radius": tightest smoothed radius}.
+        A bend is a stretch where the (smoothed) road keeps turning one way with a
+        radius under extent_radius_m, so it includes the gentler entry and exit,
+        not just the tightest part. It counts as a corner when its tightest radius
+        is under max_radius_m and its total change of direction is at least
+        min_turn_deg. S-bends split where the turning direction changes.
+        Returns dicts: {"idx": centreline indices of the whole bend, "sign": +1 left /
+        -1 right, "min_radius": tightest radius, "turn_deg": total turn}.
         """
         step = self.length / max(len(self.s) - 1, 1)
         k = 1.0 / curvature_radius(self.xy, self.closed)  # signed curvature
         k = gaussian_smooth(np.nan_to_num(k), smooth_m / step, self.closed)
-        mask = np.abs(k) > 1.0 / max_radius_m
-        n = self.n
-        gap = int(merge_gap_m / step)
-        merged = []
-        for r in _runs(mask, self.closed):
-            if merged and (r[0] - merged[-1][-1]) % n <= gap + 1:
-                last = merged[-1]
-                merged[-1] = last + [(last[-1] + j) % n for j in range(1, (r[0] - last[-1]) % n)] + r
-            else:
-                merged.append(r)
-        if self.closed and len(merged) > 1 and (merged[0][0] - merged[-1][-1]) % n <= gap + 1:
-            last = merged.pop()
-            merged[0] = last + [(last[-1] + j) % n for j in range(1, (merged[0][0] - last[-1]) % n)] + merged[0]
         heading = np.arctan2(self.t[:, 1], self.t[:, 0])
         out = []
-        for r in merged:
-            if len(r) * step < min_length_m:
-                continue
-            # total change of direction through the corner (ignores small OSM kinks)
-            turn = np.abs(np.sum(np.angle(np.exp(1j * np.diff(heading[r])))))
-            if np.degrees(turn) < min_turn_deg:
-                continue
-            entry = k[r[:max(3, len(r) // 3)]]
-            out.append({"idx": r, "sign": 1 if entry.sum() > 0 else -1,
-                        "min_radius": float(1.0 / np.abs(k[r]).max()),
-                        "turn_deg": float(np.degrees(turn))})
+        for sign in (1, -1):
+            for r in _runs(sign * k > 1.0 / extent_radius_m, self.closed):
+                if len(r) * step < min_length_m:
+                    continue
+                turn = np.degrees(np.abs(np.sum(np.angle(np.exp(1j * np.diff(heading[r]))))))
+                min_radius = float(1.0 / np.abs(k[r]).max())
+                if min_radius < max_radius_m and turn >= min_turn_deg:
+                    out.append({"idx": r, "sign": sign, "min_radius": min_radius, "turn_deg": float(turn)})
+        out.sort(key=lambda c: self.s[c["idx"][0]])
         return out
 
+    def kerb_corners(self):
+        kc = self.cfg["kerbs"]
+        return self.find_corners(kc["max_radius_m"], kc["min_turn_deg"], kc["smooth_m"],
+                                 kc["extent_radius_m"], kc["min_length_m"])
+
     def corner_runs(self):
-        """Kerb runs: kerb corners extended a little into entry and exit."""
+        """Kerb runs: each whole corner plus extend_m before and after; runs that
+        touch or nearly touch (merge_gap_m) are joined into one continuous kerb."""
         kc = self.cfg["kerbs"]
         n = self.n
-        ext = int(kc["extend_m"] / (self.length / max(len(self.s) - 1, 1)))
-        out = []
-        for c in self.find_corners(kc["max_radius_m"], kc["min_turn_deg"], kc["smooth_m"],
-                                   kc["merge_gap_m"], kc["min_length_m"]):
-            r = c["idx"]
+        step = self.length / max(len(self.s) - 1, 1)
+        ext = int(round(kc["extend_m"] / step))
+        mask = np.zeros(n, dtype=bool)
+        for c in self.kerb_corners():
+            r = np.array(c["idx"])
             if self.closed:
-                pre = [(r[0] - j) % n for j in range(ext, 0, -1)]
-                post = [(r[-1] + j) % n for j in range(1, ext + 1)]
+                mask[(np.arange(r[0] - ext, r[0]) % n)] = True
+                mask[(np.arange(r[-1] + 1, r[-1] + ext + 1) % n)] = True
             else:
-                pre = [i for i in range(r[0] - ext, r[0]) if i >= 0]
-                post = [i for i in range(r[-1] + 1, r[-1] + ext + 1) if i < n]
-            out.append(pre + r + post)
-        if self.closed and len(out) == 1 and len(out[0]) >= n:
-            out = [list(range(n)) + [0]]  # the whole loop is one corner
-        return out
+                mask[max(r[0] - ext, 0):r[0]] = True
+                mask[r[-1] + 1:min(r[-1] + ext + 1, n)] = True
+            mask[r] = True
+        # close small gaps between neighbouring kerbs
+        gap = int(round(kc["merge_gap_m"] / step))
+        for r in _runs(~mask, self.closed):
+            if len(r) <= gap and (self.closed or (r[0] > 0 and r[-1] < n - 1)):
+                mask[r] = True
+        if mask.all() and self.closed:
+            return [list(range(n)) + [0]]  # the whole loop is one corner
+        return _runs(mask, self.closed)
 
     def kerb_meshes(self, start_num):
         """Raised red/white rumble kerbs on both sides of every corner (<n>KERB)."""
@@ -260,14 +259,17 @@ class TrackGeometry:
         blend = self.cfg["terrain"]["blend_m"]
 
         # whole corners (as used for kerbs); boards go before the tighter ones
-        all_corners = self.find_corners(kc["max_radius_m"], kc["min_turn_deg"], kc["smooth_m"],
-                                        kc["merge_gap_m"], kc["min_length_m"])
+        all_corners = self.kerb_corners()
         corners = [c for c in all_corners
                    if c["min_radius"] < bc["max_radius_m"] and c["turn_deg"] >= bc["min_turn_deg"]]
-        # every cornering stretch is off-limits for boards
+        # boards may not stand beside a kerb, and the straight between a board and
+        # its corner must not contain another corner
         busy = np.zeros(self.n, dtype=bool)
+        for r in self.corner_runs():
+            busy[r] = True
+        bends = np.zeros(self.n, dtype=bool)
         for c in all_corners:
-            busy[c["idx"]] = True
+            bends[c["idx"]] = True
         fronts = {d: Mesh(f"brake_board_{d}", f"marker_{d}") for d in bc["distances_m"]}
         body = Mesh("brake_boards_foam", "foam")
         placed = 0
@@ -284,7 +286,7 @@ class TrackGeometry:
                     continue  # would sit in the previous corner
                 # the straight between board and corner must be clear of other corners
                 span = np.arange(i, i + max(int(d / step) - 1, 1)) % self.n
-                if busy[span].any():
+                if bends[span].any():
                     continue
                 C = self.xy[i] + self.nrm[i] * lateral * side
                 # keep clear of any other part of the road (crossings, hairpins)

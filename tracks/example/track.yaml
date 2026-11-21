@@ -36,10 +36,12 @@ road:
   wall_offset: 6.0            # barrier distance from road edge (null = none)
   wall_height: 1.2
 
-kerbs:                        # red/white rumble kerbs on both sides of corners
+kerbs:                        # red/white rumble kerbs along the whole of every corner
   enabled: true
-  max_radius_m: 150           # bends tighter than this count as corners
-  min_turn_deg: 20            # ...and must change direction at least this much
+  max_radius_m: 150           # a bend counts if its tightest point is tighter than this...
+  min_turn_deg: 15            # ...and it turns at least this much in total
+  extent_radius_m: 1000       # the corner runs wherever the road turns tighter than this
+  extend_m: 10                # extra kerb before and after each corner
   width_m: 1.0
   height_m: 0.05              # raised outer edge (AC KERB surface = rumble in FFB)
   stripe_m: 1.0               # length of each red / white block
