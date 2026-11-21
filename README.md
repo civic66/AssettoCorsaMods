@@ -54,6 +54,12 @@ terrain size and `reverse: true` to drive the other way. The example file lists 
 `kerbs.min_turn_deg` (20°) get raised red/white rumble kerbs on both sides, 1 m wide and 5 cm
 high, using AC's built-in `KERB` surface. Set `kerbs: {enabled: false}` to turn them off.
 
+**Brake markers:** corners whose tightest point is under `brake_markers.max_radius_m` (80 m)
+and that turn at least 30° get 200/150/100/50 m foam boards: 1 × 1 m, bold black numbers on
+lightly dirty white foam. They stand on the outside of the approach, 1 m beyond the kerb line,
+facing oncoming cars. Distances count back to where the corner's kerb begins. Boards that would
+land inside an earlier corner are skipped. Like real foam boards they have no collision.
+
 **Point-to-point roads:** add `type: point_to_point` and give the start and end as the first and
 last waypoints. To keep the router on one highway rather than shortcuts, list its OSM `ref`
 (see `tracks/ar12_gentry/track.yaml`):
@@ -133,6 +139,7 @@ Content Manager (Settings → Assetto Corsa → System), drive one clean lap wit
 | `1ROAD` …          | physical asphalt (`ROAD` surface, built into AC)           |
 | `1GRASS` …         | physical grass (shoulders + terrain)                       |
 | `1KERB` …          | red/white rumble kerbs on corners (AC's built-in `KERB` surface) |
+| `brake_board_<d>`, `brake_boards_foam` | brake-marker boards (visual only)  |
 | `1WALL` …          | collision walls (AC's built-in `WALL` type), faces point at the road |
 | `wall_back_n`      | visual-only back side of the walls                         |
 | `start_line`       | visual only                                                |

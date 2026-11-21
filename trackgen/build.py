@@ -124,25 +124,23 @@ class TrackGeometry:
         return meshes
 
     # ------------------------------------------------------------------ kerbs
-    def corner_runs(self):
-        """Index runs of the centreline that are corners (radius < kerbs.max_radius_m).
+    def find_corners(self, max_radius_m, min_turn_deg, smooth_m=6.0, merge_gap_m=15.0, min_length_m=10.0):
+        """Corners along the centreline.
 
-        Curvature is smoothed first so OSM wiggles don't count as corners; nearby
-        corners are merged, short blips dropped, and each run is extended a little
-        before and after so the kerb covers entry and exit.
+        Curvature is smoothed first so OSM wiggles don't count; runs tighter than
+        max_radius_m are merged when close together, and kept only if they are at
+        least min_length_m long and change direction by min_turn_deg in total.
+        Returns dicts: {"idx": centreline indices, "sign": +1 left / -1 right
+        (direction at corner entry), "min_radius": tightest smoothed radius}.
         """
-        kc = self.cfg["kerbs"]
         step = self.length / max(len(self.s) - 1, 1)
         k = 1.0 / curvature_radius(self.xy, self.closed)  # signed curvature
-        k = gaussian_smooth(np.nan_to_num(k), kc["smooth_m"] / step, self.closed)
-        mask = np.abs(k) > 1.0 / kc["max_radius_m"]
+        k = gaussian_smooth(np.nan_to_num(k), smooth_m / step, self.closed)
+        mask = np.abs(k) > 1.0 / max_radius_m
         n = self.n
-        # merge gaps, then drop short runs, then extend
-        gap = int(kc["merge_gap_m"] / step)
-        ext = int(kc["extend_m"] / step)
-        runs = _runs(mask, self.closed)
+        gap = int(merge_gap_m / step)
         merged = []
-        for r in runs:
+        for r in _runs(mask, self.closed):
             if merged and (r[0] - merged[-1][-1]) % n <= gap + 1:
                 last = merged[-1]
                 merged[-1] = last + [(last[-1] + j) % n for j in range(1, (r[0] - last[-1]) % n)] + r
@@ -154,15 +152,31 @@ class TrackGeometry:
         heading = np.arctan2(self.t[:, 1], self.t[:, 0])
         out = []
         for r in merged:
-            if len(r) * step < kc["min_length_m"]:
+            if len(r) * step < min_length_m:
                 continue
             # total change of direction through the corner (ignores small OSM kinks)
             turn = np.abs(np.sum(np.angle(np.exp(1j * np.diff(heading[r])))))
-            if np.degrees(turn) < kc["min_turn_deg"]:
+            if np.degrees(turn) < min_turn_deg:
                 continue
-            pre = [(r[0] - j) % n for j in range(ext, 0, -1)]
-            post = [(r[-1] + j) % n for j in range(1, ext + 1)]
-            if not self.closed:
+            entry = k[r[:max(3, len(r) // 3)]]
+            out.append({"idx": r, "sign": 1 if entry.sum() > 0 else -1,
+                        "min_radius": float(1.0 / np.abs(k[r]).max()),
+                        "turn_deg": float(np.degrees(turn))})
+        return out
+
+    def corner_runs(self):
+        """Kerb runs: kerb corners extended a little into entry and exit."""
+        kc = self.cfg["kerbs"]
+        n = self.n
+        ext = int(kc["extend_m"] / (self.length / max(len(self.s) - 1, 1)))
+        out = []
+        for c in self.find_corners(kc["max_radius_m"], kc["min_turn_deg"], kc["smooth_m"],
+                                   kc["merge_gap_m"], kc["min_length_m"]):
+            r = c["idx"]
+            if self.closed:
+                pre = [(r[0] - j) % n for j in range(ext, 0, -1)]
+                post = [(r[-1] + j) % n for j in range(1, ext + 1)]
+            else:
                 pre = [i for i in range(r[0] - ext, r[0]) if i >= 0]
                 post = [i for i in range(r[-1] + 1, r[-1] + ext + 1) if i < n]
             out.append(pre + r + post)
@@ -215,6 +229,95 @@ class TrackGeometry:
         total = sum(len(r) for r in runs) * self.length / max(len(self.s) - 1, 1)
         print(f"  kerbs: {len(runs)} corners, {total:.0f} m of corner each side")
         return meshes
+
+    # ------------------------------------------------------------------ brake markers
+    def brake_marker_meshes(self, dem_fn):
+        """Foam brake-marker boards (e.g. 200/150/100/50 m) before tighter corners:
+        corners whose tightest radius is under brake_markers.max_radius_m and that turn
+        at least brake_markers.min_turn_deg in total. Distances count back from where
+        the corner (and its kerb) begins.
+
+        Boards stand on the outside of the approach (the side you set up on before
+        turning in), facing oncoming cars, offset_from_kerb_m beyond where the kerb
+        ends. They are visual only (no physics), like the foam boards real
+        circuits use. Boards that would land inside another corner or behind the
+        start of an open road are skipped.
+        """
+        bc = self.cfg["brake_markers"]
+        if not bc.get("enabled", True):
+            return [], 0
+        rc = self.cfg["road"]
+        kc = self.cfg["kerbs"]
+        hw = rc["width"] / 2
+        kerb_w = kc["width_m"] if kc.get("enabled", True) else 0.0
+        lateral = hw + kerb_w + bc["offset_from_kerb_m"] + bc["thickness_m"] / 2
+        if rc.get("wall_offset") is not None and lateral + bc["size_m"] / 2 > hw + rc["wall_offset"] - 0.3:
+            print("  brake markers: skipped, the wall is too close to the road for boards")
+            return [], 0
+        W = H = bc["size_m"]
+        T = bc["thickness_m"]
+        inner = hw + rc["shoulder"]
+        blend = self.cfg["terrain"]["blend_m"]
+
+        # whole corners (as used for kerbs); boards go before the tighter ones
+        all_corners = self.find_corners(kc["max_radius_m"], kc["min_turn_deg"], kc["smooth_m"],
+                                        kc["merge_gap_m"], kc["min_length_m"])
+        corners = [c for c in all_corners
+                   if c["min_radius"] < bc["max_radius_m"] and c["turn_deg"] >= bc["min_turn_deg"]]
+        # every cornering stretch is off-limits for boards
+        busy = np.zeros(self.n, dtype=bool)
+        for c in all_corners:
+            busy[c["idx"]] = True
+        fronts = {d: Mesh(f"brake_board_{d}", f"marker_{d}") for d in bc["distances_m"]}
+        body = Mesh("brake_boards_foam", "foam")
+        placed = 0
+        step = self.length / max(len(self.s) - 1, 1)
+        for c in corners:
+            entry = c["idx"][0]  # where the corner (and its kerb) begins
+            side = -c["sign"]  # left-hand corner -> boards on the right, and vice versa
+            for d in bc["distances_m"]:
+                s_b = self.s[entry] - d
+                if not self.closed and s_b < 0:
+                    continue
+                i = self.index_at(s_b)
+                if busy[i]:
+                    continue  # would sit in the previous corner
+                # the straight between board and corner must be clear of other corners
+                span = np.arange(i, i + max(int(d / step) - 1, 1)) % self.n
+                if busy[span].any():
+                    continue
+                C = self.xy[i] + self.nrm[i] * lateral * side
+                # keep clear of any other part of the road (crossings, hairpins)
+                if np.hypot(*(self.xy - C).T).min() < lateral - 0.5:
+                    continue
+                if lateral + T / 2 <= inner:
+                    ground = float(self.z[i] - SHOULDER_DROP)  # standing on the grass shoulder
+                else:
+                    ground = float(conform_height(lateral, self.z[i], dem_fn(C[None, 0], C[None, 1]),
+                                                  inner, blend)[0])
+                f = -np.append(self.t[i], 0.0)          # front faces oncoming cars
+                r = -np.append(self.nrm[i], 0.0)        # viewer's right when reading it
+                up = np.array([0.0, 0.0, 1.0])
+                base = np.array([C[0], C[1], ground - 0.05])
+
+                def P(a, b, h):
+                    return base + r * a * W / 2 + f * b * T / 2 + up * h * (H + 0.05)
+
+                fronts[d].add_quads([[P(-1, 1, 0), P(1, 1, 0), P(1, 1, 1), P(-1, 1, 1)]],
+                                    [[0.003, 0.003], [0.997, 0.003], [0.997, 0.997], [0.003, 0.997]])
+                sides = [
+                    [P(1, -1, 0), P(-1, -1, 0), P(-1, -1, 1), P(1, -1, 1)],   # back
+                    [P(1, 1, 0), P(1, -1, 0), P(1, -1, 1), P(1, 1, 1)],       # right
+                    [P(-1, -1, 0), P(-1, 1, 0), P(-1, 1, 1), P(-1, -1, 1)],   # left
+                    [P(-1, 1, 1), P(1, 1, 1), P(1, -1, 1), P(-1, -1, 1)],     # top
+                ]
+                uv = [[[0, 0], [W, 0], [W, H], [0, H]], [[0, 0], [T, 0], [T, H], [0, H]],
+                      [[0, 0], [T, 0], [T, H], [0, H]], [[0, 0], [W, 0], [W, T], [0, T]]]
+                body.add_quads(sides, uv)
+                placed += 1
+        meshes = [m for m in fronts.values() if len(m.faces)] + ([body] if len(body.faces) else [])
+        print(f"  brake markers: {placed} boards before {len(corners)} corners")
+        return meshes, placed
 
     def line_mesh(self, name, s_at):
         """Thin white line across the road (visual only)."""

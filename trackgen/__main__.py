@@ -16,7 +16,7 @@ from .kn5 import write_kn5
 from .mesh import write_mtl, write_obj
 from .osm import RoadGraph, fetch_roads, route_loop, route_open
 from .package import (write_map, write_outline, write_preview, write_route_debug,
-                      write_textures, write_ui)
+                      write_marker_textures, write_textures, write_ui)
 
 DEFAULTS = {
     "display_name": None,
@@ -27,6 +27,10 @@ DEFAULTS = {
     "kerbs": {"enabled": True, "max_radius_m": 150.0, "width_m": 1.0, "height_m": 0.05,
               "stripe_m": 1.0, "min_length_m": 10.0, "extend_m": 4.0, "merge_gap_m": 15.0,
               "smooth_m": 6.0, "min_turn_deg": 20.0},
+    # foam brake-marker boards before tighter corners, on the outside of the approach
+    "brake_markers": {"enabled": True, "distances_m": [200, 150, 100, 50],
+                      "max_radius_m": 80.0, "min_turn_deg": 30.0,
+                      "size_m": 1.0, "thickness_m": 0.12, "offset_from_kerb_m": 1.0},
     "smoothing": {"xy_m": 4.0, "z_m": 25.0, "step_m": 2.0},
     "terrain": {"margin_m": 200.0, "grid_m": 3.0, "blend_m": 30.0},
     "elevation_zoom": 14,
@@ -139,6 +143,8 @@ def main():
     meshes += shoulders
     meshes += geo.terrain_meshes(dem_rel, start_num=1 + len(shoulders))
     meshes += geo.kerb_meshes(start_num=1)
+    board_meshes, _ = geo.brake_marker_meshes(dem_rel)
+    meshes += board_meshes
     meshes += geo.barrier_meshes(dem_rel, start_num=1)
     if closed:
         start = cfg["start_offset_m"]
@@ -156,8 +162,16 @@ def main():
     gate_idx = [geo.index_at(g) for g in gates]
 
     # ------------------------------------------------ source files (Blender route)
+    materials = dict(MATERIALS)
     write_textures(src_dir / "textures")
-    write_mtl(src_dir / "track.mtl", {k: f"textures/{v['texture']}" for k, v in MATERIALS.items()})
+    if board_meshes:
+        dists = cfg["brake_markers"]["distances_m"]
+        write_marker_textures(src_dir / "textures", dists)
+        board_props = {"ksAmbient": 0.5, "ksDiffuse": 0.5, "ksSpecular": 0.02, "ksSpecularEXP": 5.0}
+        materials["foam"] = {"texture": "foam.png", "props": board_props}
+        for d in dists:
+            materials[f"marker_{d}"] = {"texture": f"marker_{d}.png", "props": board_props}
+    write_mtl(src_dir / "track.mtl", {k: f"textures/{v['texture']}" for k, v in materials.items()})
     write_obj(meshes, src_dir / "track.obj", "track.mtl")
     (src_dir / "markers.json").write_text(json.dumps({
         "frame": "blender (x=east, y=north, z=up, metres)",
@@ -166,8 +180,8 @@ def main():
         "x_east,y_north,z_up\n" + "\n".join(f"{a:.3f},{b:.3f},{c:.3f}" for (a, b), c in zip(xy, z)))
 
     # ------------------------------------------------ AC folder (ready to play)
-    textures = {v["texture"]: (src_dir / "textures" / v["texture"]).read_bytes() for v in MATERIALS.values()}
-    write_kn5(track_dir / f"{name}.kn5", name, meshes, markers, MATERIALS, textures)
+    textures = {v["texture"]: (src_dir / "textures" / v["texture"]).read_bytes() for v in materials.values()}
+    write_kn5(track_dir / f"{name}.kn5", name, meshes, markers, materials, textures)
     # ROAD, GRASS and WALL are built-in AC surfaces, so no data/surfaces.ini is needed
     write_map(track_dir, xy, closed=closed)
     write_outline(track_dir / "ui" / "outline.png", xy, gate_idx, closed=closed)

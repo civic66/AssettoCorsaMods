@@ -44,6 +44,14 @@ kerbs:                        # red/white rumble kerbs on both sides of corners
   height_m: 0.05              # raised outer edge (AC KERB surface = rumble in FFB)
   stripe_m: 1.0               # length of each red / white block
 
+brake_markers:                # foam distance boards before tighter corners
+  enabled: true
+  distances_m: [200, 150, 100, 50]
+  max_radius_m: 80            # corner must get tighter than this...
+  min_turn_deg: 30            # ...and turn at least this much
+  size_m: 1.0                 # boards are size x size metres
+  offset_from_kerb_m: 1.0     # grass gap between kerb line and board
+
 smoothing:
   xy_m: 4.0                   # bigger = rounder corners
   z_m: 25.0                   # bigger = smoother elevation (DEM is noisy)

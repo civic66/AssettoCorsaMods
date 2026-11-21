@@ -42,6 +42,18 @@ class Mesh:
             tris = [t[mask] for t in tris]
         self.f.append(np.concatenate([t.reshape(-1, 3) for t in tris]))
 
+    def add_quads(self, quads, uvs):
+        """quads: (k, 4, 3) corners in counter-clockwise order seen from the front;
+        uvs: (k, 4, 2). Each quad gets its own vertices (flat shading)."""
+        quads = np.asarray(quads, dtype=float).reshape(-1, 4, 3)
+        uvs = np.broadcast_to(np.asarray(uvs, dtype=float), quads.shape[:2] + (2,))
+        base = sum(len(a) for a in self.v)
+        self.v.append(quads.reshape(-1, 3))
+        self.uv.append(uvs.reshape(-1, 2))
+        i = base + 4 * np.arange(len(quads))[:, None]
+        tris = np.concatenate([i + [0, 1, 2], i + [0, 2, 3]])
+        self.f.append(tris)
+
     def compact(self):
         """Drop vertices not referenced by any face."""
         v, uv, f = self.vertices, self.uvs, self.faces

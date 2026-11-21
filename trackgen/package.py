@@ -2,7 +2,7 @@
 import json
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 # ---------------------------------------------------------------- textures
@@ -51,6 +51,65 @@ def write_textures(tex_dir, size=512):
 
 
 # ---------------------------------------------------------------- map / outline
+# ---------------------------------------------------------------- brake-marker boards
+BOLD_FONTS = [
+    "arialbd.ttf", "Arial Bold.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/Library/Fonts/Arial Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "Helvetica-Bold.ttf",
+]
+
+
+def _bold_font(px):
+    """A bold sans font at px size, plus extra stroke width if we had to fake bold."""
+    for name in BOLD_FONTS:
+        try:
+            return ImageFont.truetype(name, px), 0
+        except OSError:
+            continue
+    return ImageFont.load_default(size=px), max(2, px // 14)  # Pillow's own font, thickened
+
+
+def _foam(size, seed):
+    """Slightly dirty white styrofoam: bead texture, speckles, grime near the bottom."""
+    rng = np.random.default_rng(seed)
+    beads = np.asarray(Image.fromarray((rng.random((size // 3, size // 3)) * 255).astype(np.uint8))
+                       .resize((size, size), Image.NEAREST).filter(ImageFilter.GaussianBlur(1.2)),
+                       dtype=float) / 255.0
+    fine = rng.random((size, size))
+    blotch = _noise(size, seed + 1, 64)
+    v = np.linspace(0, 1, size)[:, None]           # 0 = top of the image, 1 = bottom
+    grime = 0.05 * np.clip((v - 0.65) / 0.35, 0, 1) ** 1.5 * (0.6 + 0.8 * _noise(size, seed + 2, 16))
+    g = 0.94 + 0.035 * (beads - 0.5) + 0.02 * (fine - 0.5) - 0.02 * np.clip(blotch - 0.6, 0, 1) * 4 - grime
+    specks = rng.random((size, size)) > 0.9985
+    g = np.where(specks, g * 0.55, g)
+    return np.dstack([g * 0.99, g * 0.985, g * 0.96])  # a touch warm, like aged foam
+
+
+def write_marker_textures(tex_dir, distances, size=512):
+    """foam.png for the board edges and marker_<d>.png with the distance in bold black."""
+    tex_dir.mkdir(parents=True, exist_ok=True)
+    Image.fromarray((np.clip(_foam(size, 11), 0, 1) * 255).astype(np.uint8)).save(tex_dir / "foam.png")
+    for k, d in enumerate(distances):
+        base = Image.fromarray((np.clip(_foam(size, 20 + k), 0, 1) * 255).astype(np.uint8))
+        text = str(d)
+        px = int(size * (0.60 if len(text) <= 2 else 0.41))
+        font, stroke = _bold_font(px)
+        mask = Image.new("L", (size, size), 0)
+        dm = ImageDraw.Draw(mask)
+        box = dm.textbbox((0, 0), text, font=font, stroke_width=stroke)
+        x = (size - (box[2] - box[0])) / 2 - box[0]
+        y = (size - (box[3] - box[1])) / 2 - box[1]
+        dm.text((x, y), text, fill=255, font=font, stroke_width=stroke, stroke_fill=255)
+        # slightly worn print: a few tiny gaps in the ink
+        wear = (np.random.default_rng(40 + k).random((size, size)) > 0.985) * 120
+        ink = np.clip(np.asarray(mask, dtype=float) - wear, 0, 255) / 255.0
+        rgb = np.asarray(base, dtype=float) / 255.0
+        rgb = rgb * (1 - ink[..., None]) + np.array([0.06, 0.06, 0.07]) * ink[..., None]
+        Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8)).save(tex_dir / f"marker_{d}.png")
+
+
 def _fit(xy, w, h, margin):
     lo, hi = xy.min(axis=0), xy.max(axis=0)
     scale = min((w - 2 * margin) / (hi[0] - lo[0]), (h - 2 * margin) / (hi[1] - lo[1]))
