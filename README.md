@@ -61,7 +61,11 @@ them off.
 **Brake markers:** corners whose tightest point is under `brake_markers.max_radius_m` (80 m)
 and that turn at least 30° get 200/150/100/50 m foam boards: 1 × 1 m, bold black numbers on
 lightly dirty white foam. They stand on the outside of the approach, 1 m beyond the kerb line,
-facing oncoming cars. Distances count back to where the corner begins to turn. Boards that would
+facing oncoming cars. Distances count back to the corner's estimated turn-in: the point where
+the bend reaches half its peak tightness (`turn_in_fraction`). On compact circuit corners that is
+just before the tightest part; on long highway curves it skips the gentle lead-in. Use
+`zero_offset_m` to shift all boards (positive = later), or `zero_point: corner_start` to count
+from where the road first starts to bend. Boards that would
 land inside an earlier corner are skipped. Like real foam boards they have no collision.
 
 **Point-to-point roads:** add `type: point_to_point` and give the start and end as the first and

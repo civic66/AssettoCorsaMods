@@ -53,6 +53,9 @@ brake_markers:                # foam distance boards before tighter corners
   min_turn_deg: 30            # ...and turn at least this much
   size_m: 1.0                 # boards are size x size metres
   offset_from_kerb_m: 1.0     # grass gap between kerb line and board
+  zero_point: turn_in         # distances count to the estimated turn-in (or corner_start)
+  turn_in_fraction: 0.5       # turn-in = where the bend reaches this share of its peak tightness
+  zero_offset_m: 0            # shift every board; positive = closer to the corner
 
 smoothing:
   xy_m: 4.0                   # bigger = rounder corners

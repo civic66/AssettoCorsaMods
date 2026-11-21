@@ -148,7 +148,8 @@ class TrackGeometry:
                 turn = np.degrees(np.abs(np.sum(np.angle(np.exp(1j * np.diff(heading[r]))))))
                 min_radius = float(1.0 / np.abs(k[r]).max())
                 if min_radius < max_radius_m and turn >= min_turn_deg:
-                    out.append({"idx": r, "sign": sign, "min_radius": min_radius, "turn_deg": float(turn)})
+                    out.append({"idx": r, "sign": sign, "min_radius": min_radius, "turn_deg": float(turn),
+                                "curv": sign * k[r]})  # how tight, along the bend
         out.sort(key=lambda c: self.s[c["idx"][0]])
         return out
 
@@ -233,8 +234,11 @@ class TrackGeometry:
     def brake_marker_meshes(self, dem_fn):
         """Foam brake-marker boards (e.g. 200/150/100/50 m) before tighter corners:
         corners whose tightest radius is under brake_markers.max_radius_m and that turn
-        at least brake_markers.min_turn_deg in total. Distances count back from where
-        the corner (and its kerb) begins.
+        at least brake_markers.min_turn_deg in total. Distances count back to the
+        corner's zero point: by default its estimated turn-in, where the bend reaches
+        turn_in_fraction (0.5) of its peak tightness, plus zero_offset_m. On compact
+        circuit corners that is just before the tightest part; on long highway curves
+        it skips the gentle lead-in. zero_point: corner_start uses where it starts to bend.
 
         Boards stand on the outside of the approach (the side you set up on before
         turning in), facing oncoming cars, offset_from_kerb_m beyond where the kerb
@@ -262,31 +266,32 @@ class TrackGeometry:
         all_corners = self.kerb_corners()
         corners = [c for c in all_corners
                    if c["min_radius"] < bc["max_radius_m"] and c["turn_deg"] >= bc["min_turn_deg"]]
-        # boards may not stand beside a kerb, and the straight between a board and
-        # its corner must not contain another corner
-        busy = np.zeros(self.n, dtype=bool)
-        for r in self.corner_runs():
-            busy[r] = True
-        bends = np.zeros(self.n, dtype=bool)
-        for c in all_corners:
-            bends[c["idx"]] = True
+        # boards must not stand in (or count across) a different corner
+        owner = np.full(self.n, -1)
+        for ci, c in enumerate(all_corners):
+            owner[c["idx"]] = ci
         fronts = {d: Mesh(f"brake_board_{d}", f"marker_{d}") for d in bc["distances_m"]}
         body = Mesh("brake_boards_foam", "foam")
         placed = 0
         step = self.length / max(len(self.s) - 1, 1)
         for c in corners:
-            entry = c["idx"][0]  # where the corner (and its kerb) begins
+            ci = next(j for j, a in enumerate(all_corners) if a is c)
+            r = np.array(c["idx"])
+            if bc["zero_point"] == "corner_start":
+                zero = r[0]
+            else:  # "turn_in": where the bend reaches turn_in_fraction of its peak tightness
+                zero = r[int(np.argmax(c["curv"] >= bc["turn_in_fraction"] * c["curv"].max()))]
+            s_zero = self.s[zero] + bc["zero_offset_m"]
             side = -c["sign"]  # left-hand corner -> boards on the right, and vice versa
             for d in bc["distances_m"]:
-                s_b = self.s[entry] - d
+                s_b = s_zero - d
                 if not self.closed and s_b < 0:
                     continue
                 i = self.index_at(s_b)
-                if busy[i]:
-                    continue  # would sit in the previous corner
-                # the straight between board and corner must be clear of other corners
-                span = np.arange(i, i + max(int(d / step) - 1, 1)) % self.n
-                if bends[span].any():
+                # the board and the road between it and the turn-in must not belong
+                # to another corner (gentle entry of this corner is fine)
+                span = np.arange(i, i + max(int(round(d / step)), 1)) % self.n
+                if ((owner[span] != -1) & (owner[span] != ci)).any():
                     continue
                 C = self.xy[i] + self.nrm[i] * lateral * side
                 # keep clear of any other part of the road (crossings, hairpins)

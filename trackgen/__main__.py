@@ -34,7 +34,9 @@ DEFAULTS = {
     # foam brake-marker boards before tighter corners, on the outside of the approach
     "brake_markers": {"enabled": True, "distances_m": [200, 150, 100, 50],
                       "max_radius_m": 80.0, "min_turn_deg": 30.0,
-                      "size_m": 1.0, "thickness_m": 0.12, "offset_from_kerb_m": 1.0},
+                      "size_m": 1.0, "thickness_m": 0.12, "offset_from_kerb_m": 1.0,
+                      # what the distances count to: "turn_in" (estimated) or "corner_start"
+                      "zero_point": "turn_in", "turn_in_fraction": 0.5, "zero_offset_m": 0.0},
     "smoothing": {"xy_m": 4.0, "z_m": 25.0, "step_m": 2.0},
     "terrain": {"margin_m": 200.0, "grid_m": 3.0, "blend_m": 30.0},
     "elevation_zoom": 14,
